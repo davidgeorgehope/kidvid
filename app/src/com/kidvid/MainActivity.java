@@ -303,6 +303,8 @@ public class MainActivity extends Activity {
             hideBrowser();
             return;
         }
+        // Reload video list to pick up any new content
+        loadVideoList();
         browserVisible = true;
         videoView.pause();
         if (browseButton != null) browseButton.setVisibility(View.GONE);
