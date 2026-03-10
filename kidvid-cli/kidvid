@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# kidvid — Manage content on the KidVid phone
+#
+# Usage:
+#   kidvid add <internet-archive-url>     Download and queue a video
+#   kidvid search "query"                 Search Internet Archive for kids content
+#   kidvid sync                           Push all staged content to phone
+#   kidvid list                           List videos on the phone
+#   kidvid remove <filename>              Remove a video from phone
+#   kidvid status                         Phone connection + storage info
+#   kidvid launch                         Launch KidVid app on phone
+#   kidvid connect                        Connect to phone over WiFi
+#   kidvid reboot                         Reboot phone remotely
+
+set -euo pipefail
+
+STAGING="$HOME/.openclaw/workspace/kidvid/staging"
+PHONE_DIR="/storage/AE60-81BC/kidvid"
+VIDEOS_DIR="$PHONE_DIR/videos"
+MANIFEST="$PHONE_DIR/manifest.json"
+PHONE_DIR_INTERNAL="/sdcard/kidvid"
+PHONE_IP_FILE="$HOME/.openclaw/workspace/kidvid/.phone_ip"
+PHONE_IP="192.168.87.32"
+
+mkdir -p "$STAGING"
+
+# Save/load phone IP
+if [[ -f "$PHONE_IP_FILE" ]]; then
+    PHONE_IP=$(cat "$PHONE_IP_FILE")
+fi
+
+# Auto-connect over WiFi if no USB device found
+ensure_connection() {
+    if adb devices 2>/dev/null | grep -q "device$"; then
+        return 0
+    fi
+    echo "📡 No USB connection, trying WiFi ($PHONE_IP)..."
+    adb connect "$PHONE_IP:5555" >/dev/null 2>&1
+    sleep 1
+    if adb devices 2>/dev/null | grep -q "device$"; then
+        echo "✅ Connected over WiFi"
+        return 0
+    else
+        echo "❌ Can't reach phone. Is it on WiFi?"
+        return 1
+    fi
+}
+
+cmd_connect() {
+    local ip="${1:-$PHONE_IP}"
+    echo "📡 Connecting to phone at $ip..."
+    
+    # If USB connected, enable TCP mode first
+    if adb devices 2>/dev/null | grep -qv ":" | grep -q "device$"; then
+        echo "   USB detected, enabling WiFi ADB..."
+        adb tcpip 5555 2>/dev/null
+        sleep 2
+        ip=$(adb shell ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+        echo "   Phone IP: $ip"
+    fi
+    
+    adb connect "$ip:5555" 2>&1
+    
+    # Save IP for future use
+    echo "$ip" > "$PHONE_IP_FILE"
+    echo "✅ Saved phone IP: $ip"
+}
+
+cmd_reboot() {
+    ensure_connection || return 1
+    echo "🔄 Rebooting phone..."
+    adb reboot 2>&1
+    echo "   Phone will reconnect automatically over WiFi after boot"
+}
+
+cmd_add() {
+    local url="$1"
+    local title="${2:-}"
+    local category="${3:-classic}"
+    
+    # Extract identifier from URL
+    local identifier=$(echo "$url" | grep -oP 'details/\K[^/]+' || basename "$url")
+    local safe_name=$(echo "$identifier" | tr ' /' '__')
+    local outfile="$STAGING/${safe_name}.mp4"
+    
+    if [[ -f "$outfile" ]]; then
+        echo "⏭️  Already downloaded: $safe_name"
+        return
+    fi
+    
+    echo "⬇️  Downloading: $url"
+    yt-dlp -f "best[height<=480]/best[height<=720]/best" \
+        --no-playlist --recode-video mp4 \
+        -o "$outfile" "$url" 2>&1
+    
+    if [[ -f "$outfile" ]]; then
+        local size_mb=$(echo "scale=1; $(stat -f%z "$outfile") / 1048576" | bc)
+        echo "✅ Downloaded: ${safe_name}.mp4 (${size_mb}MB)"
+        echo "   Run 'kidvid sync' to push to phone"
+    else
+        echo "❌ Download failed"
+    fi
+}
+
+cmd_search() {
+    local query="$1"
+    python3 -c "
+import urllib.request, urllib.parse, json
+
+query = '''${query}'''
+params = urllib.parse.urlencode({
+    'q': f'{query} mediatype:movies',
+    'fl[]': 'identifier,title,year,description',
+    'rows': '15',
+    'output': 'json',
+    'sort[]': 'downloads desc',
+})
+url = f'https://archive.org/advancedsearch.php?{params}'
+req = urllib.request.Request(url, headers={'User-Agent': 'kidvid/1.0'})
+
+with urllib.request.urlopen(req, timeout=10) as resp:
+    data = json.loads(resp.read().decode())
+
+docs = data.get('response', {}).get('docs', [])
+total = data.get('response', {}).get('numFound', 0)
+print(f'\nFound {total} results for: {query}')
+print('─' * 60)
+for i, d in enumerate(docs, 1):
+    title = d.get('title', '?')
+    year = d.get('year', '')
+    ident = d.get('identifier', '')
+    year_str = f' ({year})' if year else ''
+    url = f'https://archive.org/details/{ident}'
+    print(f'[{i}] {title}{year_str}')
+    print(f'    {url}')
+    print()
+print('To add: kidvid add <url>')
+"
+}
+
+cmd_sync() {
+    echo "📱 Syncing content to phone..."
+    ensure_connection || return 1
+    
+    # Ensure directories exist
+    adb shell mkdir -p "$VIDEOS_DIR" 2>/dev/null
+    
+    # Get list of what's already on phone
+    local on_phone=$(adb shell ls "$VIDEOS_DIR" 2>/dev/null || echo "")
+    
+    # Push new videos
+    local pushed=0
+    for f in "$STAGING"/*.mp4; do
+        [[ -f "$f" ]] || continue
+        local fname=$(basename "$f")
+        if echo "$on_phone" | grep -q "$fname"; then
+            continue
+        fi
+        local size_mb=$(echo "scale=1; $(stat -f%z "$f") / 1048576" | bc)
+        echo "📤 Pushing $fname (${size_mb}MB)..."
+        adb push "$f" "$VIDEOS_DIR/$fname" 2>&1 | tail -1
+        pushed=$((pushed + 1))
+    done
+    
+    if [[ $pushed -eq 0 ]]; then
+        echo "✅ Phone is up to date — no new videos to push"
+    else
+        echo "✅ Pushed $pushed new videos"
+    fi
+    
+    # Rebuild and push manifest
+    python3 -c "
+import json, subprocess
+
+result = subprocess.run(['adb', 'shell', 'ls', '$VIDEOS_DIR'], capture_output=True, text=True)
+files = [f.strip() for f in result.stdout.strip().split('\n') if f.strip().endswith('.mp4')]
+
+manifest = []
+for f in sorted(files):
+    name = f.replace('.mp4', '').replace('_', ' ').title()
+    # Try to detect category from filename
+    cat = 'classic'
+    for prefix, category in [('popeye', 'popeye'), ('bb ', 'betty_boop'), ('superman', 'superman'), 
+                              ('noveltoon', 'casper'), ('woody', 'woody'), ('mighty', 'mighty_mouse'),
+                              ('silly', 'disney'), ('disney', 'disney'), ('steamboat', 'disney'),
+                              ('planes', 'disney'), ('flowers', 'disney'), ('three', 'disney'),
+                              ('sesame', 'sesame_street'), ('mister', 'mr_rogers')]:
+        if f.lower().startswith(prefix):
+            cat = category
+            break
+    manifest.append({'title': name, 'filename': f, 'category': cat})
+
+with open('/tmp/kidvid-manifest.json', 'w') as mf:
+    json.dump(manifest, mf, indent=2)
+print(f'Manifest: {len(manifest)} videos')
+"
+    adb push /tmp/kidvid-manifest.json "$MANIFEST" 2>&1 | tail -1
+    echo "📋 Manifest updated"
+}
+
+cmd_list() {
+    ensure_connection || return 1
+    echo "📱 Videos on phone:"
+    echo "─────────────────────────────────────────"
+    adb shell "ls -la $VIDEOS_DIR 2>/dev/null" | awk '/\.mp4/ {
+        size_mb = $5 / 1048576;
+        printf "  %-50s %6.1f MB\n", $NF, size_mb
+    }'
+    echo "─────────────────────────────────────────"
+    local total=$(adb shell "du -sm $VIDEOS_DIR 2>/dev/null" | awk '{print $1}')
+    local free=$(adb shell "df /sdcard 2>/dev/null" | awk 'NR==2 {print $4}')
+    echo "Total: ${total:-?}MB on phone | Free: ${free:-?}"
+}
+
+cmd_remove() {
+    ensure_connection || return 1
+    local fname="$1"
+    echo "🗑️  Removing $fname from phone..."
+    adb shell rm "$VIDEOS_DIR/$fname" 2>&1
+    echo "Done. Run 'kidvid sync' to update manifest."
+}
+
+cmd_status() {
+    echo "📱 KidVid Status"
+    echo "─────────────────────────────────────────"
+    ensure_connection || { echo "Connection: ❌ Not connected"; return 1; }
+    
+    # Prefer WiFi target to avoid "more than one device" errors
+    local target=""
+    if adb devices 2>/dev/null | grep -q "$PHONE_IP"; then
+        target="-s ${PHONE_IP}:5555"
+    fi
+    
+    echo "Connection: ✅ Connected"
+    echo "Model: $(adb $target shell getprop ro.product.model)"
+    echo "Android: $(adb $target shell getprop ro.build.version.release)"
+    local storage=$(adb $target shell df -h /sdcard 2>/dev/null | awk 'NR==2 {printf "Used: %s / %s (Free: %s)", $3, $2, $4}')
+    echo "Storage: $storage"
+    local count=$(adb $target shell ls "$VIDEOS_DIR" 2>/dev/null | grep -c ".mp4" || echo 0)
+    echo "Videos: $count on phone"
+    local staged=$(ls "$STAGING"/*.mp4 2>/dev/null | wc -l | tr -d ' ')
+    echo "Staged: $staged on Mac"
+}
+
+cmd_launch() {
+    ensure_connection || return 1
+    adb shell am start -n com.kidvid/.MainActivity 2>&1
+    echo "🎬 KidVid launched!"
+}
+
+# --- Main ---
+if [[ $# -lt 1 ]]; then
+    echo "Usage: kidvid {add|search|sync|list|remove|status|launch} [args]"
+    echo ""
+    echo "  add <url> [title] [category]   Download from Internet Archive"
+    echo "  search \"query\"                 Search for kids content"
+    echo "  sync                            Push staged content to phone"
+    echo "  list                            List videos on phone"
+    echo "  remove <filename>               Remove video from phone"
+    echo "  status                          Connection & storage info"
+    echo "  launch                          Launch KidVid app"
+    exit 0
+fi
+
+ACTION="$1"
+shift
+
+case "$ACTION" in
+    add)     cmd_add "${1:?URL required}" "${2:-}" "${3:-}" ;;
+    search)  cmd_search "${1:?Query required}" ;;
+    sync)    cmd_sync ;;
+    list)    cmd_list ;;
+    remove)  cmd_remove "${1:?Filename required}" ;;
+    status)  cmd_status ;;
+    launch)   cmd_launch ;;
+    connect)  cmd_connect "${1:-}" ;;
+    reboot)   cmd_reboot ;;
+    *)        echo "Unknown: $ACTION"; exit 1 ;;
+esac
