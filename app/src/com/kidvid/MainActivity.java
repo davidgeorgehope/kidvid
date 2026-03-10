@@ -21,12 +21,13 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.BaseAdapter;
+import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
-import android.widget.Button;
 import android.widget.VideoView;
 import android.Manifest;
 
@@ -61,7 +62,6 @@ public class MainActivity extends Activity {
     private static final String VIDEOS_DIR = KIDVID_DIR + "videos/";
     private static final String MANIFEST_FILE = KIDVID_DIR + "manifest.json";
 
-    // SD card paths - try these first
     private static final String[] SD_PATHS = {
         "/storage/AE60-81BC/kidvid/",
     };
@@ -70,20 +70,17 @@ public class MainActivity extends Activity {
     private String activeManifest = MANIFEST_FILE;
     private static final int PERM_REQUEST = 100;
 
-    // A-B Loop
-    private int loopStartMs = -1;
-    private int loopEndMs = -1;
-    private boolean loopActive = false;
-    private Handler loopHandler = new Handler(Looper.getMainLooper());
-
-    // Hard press detection
-    private static final float HARD_PRESS_THRESHOLD = 0.9f;
-    private long lastHardPressTime = 0;
-    private static final long HARD_PRESS_COOLDOWN = 300;
+    // Seek bar
+    private SeekBar seekBar;
+    private Handler seekHandler = new Handler(Looper.getMainLooper());
+    private boolean userSeeking = false;
 
     // Thumbnail cache
     private Map<String, Bitmap> thumbnailCache = new HashMap<>();
     private ExecutorService thumbExecutor = Executors.newFixedThreadPool(2);
+
+    // Browse button
+    private Button browseButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -95,6 +92,7 @@ public class MainActivity extends Activity {
         hideSystemUI();
         enableLockTask();
         addBrowseButton();
+        addSeekBar();
 
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             private static final int SWIPE_THRESHOLD = 100;
@@ -113,34 +111,13 @@ public class MainActivity extends Activity {
                     else prevVideo();
                     return true;
                 }
-
-                if (adx > SWIPE_THRESHOLD && Math.abs(vX) > SWIPE_VELOCITY && adx > ady) {
-                    if (dx < 0) seekRelative(-5000);
-                    else seekRelative(5000);
-                    return true;
-                }
                 return false;
             }
 
             @Override
-            public boolean onSingleTapConfirmed(MotionEvent e) {
-                int screenWidth = getWindow().getDecorView().getWidth();
-                if (e.getX() < screenWidth / 2.0f) seekRelative(-5000);
-                else seekRelative(5000);
-                return true;
-            }
-
-            @Override
-            public boolean onDoubleTap(MotionEvent e) {
-                int screenWidth = getWindow().getDecorView().getWidth();
-                if (e.getX() < screenWidth / 2.0f) seekRelative(-15000);
-                else seekRelative(15000);
-                return true;
-            }
-
-            @Override
             public void onLongPress(MotionEvent e) {
-                togglePause();
+                // Long press = rewind 10 seconds
+                seekRelative(-10000);
             }
         });
 
@@ -164,19 +141,336 @@ public class MainActivity extends Activity {
         }
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == PERM_REQUEST && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            loadAndPlay();
+    // --- Seek Bar ---
+
+    private void addSeekBar() {
+        seekBar = new SeekBar(this);
+        seekBar.setMax(1000);
+        seekBar.setProgress(0);
+        seekBar.setMinimumHeight(60);
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.gravity = Gravity.BOTTOM;
+        params.setMargins(16, 0, 80, 8);
+
+        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                if (fromUser && videoView != null) {
+                    int duration = videoView.getDuration();
+                    if (duration > 0) {
+                        int newPos = (int) ((long) progress * duration / 1000);
+                        videoView.seekTo(newPos);
+                    }
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+                userSeeking = true;
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+                userSeeking = false;
+            }
+        });
+
+        rootLayout.addView(seekBar, params);
+        startSeekBarUpdater();
+    }
+
+    private void startSeekBarUpdater() {
+        seekHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (videoView != null && videoView.isPlaying() && !userSeeking) {
+                    int duration = videoView.getDuration();
+                    if (duration > 0) {
+                        int pos = videoView.getCurrentPosition();
+                        seekBar.setProgress((int) ((long) pos * 1000 / duration));
+                    }
+                }
+                seekHandler.postDelayed(this, 250);
+            }
+        }, 250);
+    }
+
+    // --- Browse Button ---
+
+    private void addBrowseButton() {
+        browseButton = new Button(this);
+        browseButton.setText("\uD83C\uDFAC");
+        browseButton.setTextSize(24);
+        browseButton.setBackgroundColor(Color.argb(160, 40, 40, 60));
+        browseButton.setTextColor(Color.WHITE);
+        browseButton.setPadding(16, 8, 16, 8);
+        browseButton.setMinWidth(0);
+        browseButton.setMinHeight(0);
+        browseButton.setMinimumWidth(0);
+        browseButton.setMinimumHeight(0);
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.gravity = Gravity.BOTTOM | Gravity.END;
+        params.setMargins(0, 0, 24, 24);
+
+        browseButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showBrowser();
+            }
+        });
+
+        rootLayout.addView(browseButton, params);
+    }
+
+    // --- Video Browser ---
+
+    private void showBrowser() {
+        if (browserVisible) {
+            hideBrowser();
+            return;
+        }
+        loadVideoList();
+        browserVisible = true;
+        videoView.pause();
+        if (browseButton != null) browseButton.setVisibility(View.GONE);
+        if (seekBar != null) seekBar.setVisibility(View.GONE);
+
+        browserOverlay = new LinearLayout(this);
+        ((LinearLayout) browserOverlay).setOrientation(LinearLayout.VERTICAL);
+        browserOverlay.setBackgroundColor(Color.argb(240, 20, 20, 30));
+        browserOverlay.setClickable(true);
+
+        TextView titleBar = new TextView(this);
+        titleBar.setText("\uD83C\uDFAC  Pick a Video!");
+        titleBar.setTextColor(Color.WHITE);
+        titleBar.setTextSize(20);
+        titleBar.setGravity(Gravity.CENTER);
+        titleBar.setPadding(0, 40, 0, 20);
+        ((LinearLayout) browserOverlay).addView(titleBar,
+            new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        browserGrid = new GridView(this);
+        browserGrid.setNumColumns(2);
+        browserGrid.setVerticalSpacing(16);
+        browserGrid.setHorizontalSpacing(16);
+        browserGrid.setPadding(16, 8, 16, 16);
+        browserGrid.setAdapter(new ThumbnailAdapter());
+        browserGrid.setOnItemClickListener(new android.widget.AdapterView.OnItemClickListener() {
+            @Override
+            public void onItemClick(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                hideBrowser();
+                playVideo(position);
+            }
+        });
+
+        ((LinearLayout) browserOverlay).addView(browserGrid,
+            new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        rootLayout.addView(browserOverlay,
+            new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void hideBrowser() {
+        if (browserOverlay != null) {
+            rootLayout.removeView(browserOverlay);
+            browserOverlay = null;
+        }
+        browserVisible = false;
+        browserGrid = null;
+        if (browseButton != null) browseButton.setVisibility(View.VISIBLE);
+        if (seekBar != null) seekBar.setVisibility(View.VISIBLE);
+        if (!isPaused) videoView.start();
+        hideSystemUI();
+    }
+
+    private class ThumbnailAdapter extends BaseAdapter {
+        @Override
+        public int getCount() { return videoFiles.size(); }
+        @Override
+        public Object getItem(int position) { return videoFiles.get(position); }
+        @Override
+        public long getItemId(int position) { return position; }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            LinearLayout cell;
+            ImageView thumb;
+            TextView label;
+
+            if (convertView == null) {
+                cell = new LinearLayout(MainActivity.this);
+                cell.setOrientation(LinearLayout.VERTICAL);
+                cell.setGravity(Gravity.CENTER);
+                cell.setPadding(8, 8, 8, 8);
+
+                thumb = new ImageView(MainActivity.this);
+                thumb.setTag("thumb");
+                thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                int thumbHeight = (int)(getResources().getDisplayMetrics().widthPixels / 2.5);
+                cell.addView(thumb, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, thumbHeight));
+
+                label = new TextView(MainActivity.this);
+                label.setTag("label");
+                label.setTextColor(Color.WHITE);
+                label.setTextSize(12);
+                label.setGravity(Gravity.CENTER);
+                label.setMaxLines(2);
+                label.setPadding(4, 8, 4, 4);
+                cell.addView(label, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            } else {
+                cell = (LinearLayout) convertView;
+                thumb = (ImageView) cell.findViewWithTag("thumb");
+                label = (TextView) cell.findViewWithTag("label");
+            }
+
+            String path = videoFiles.get(position);
+            String title = position < videoTitles.size() ? videoTitles.get(position) : "Video " + (position + 1);
+            label.setText(title);
+            cell.setBackgroundColor(position == currentIndex ? Color.argb(100, 100, 100, 255) : Color.argb(60, 255, 255, 255));
+
+            if (thumbnailCache.containsKey(path)) {
+                Bitmap bmp = thumbnailCache.get(path);
+                if (bmp != null) thumb.setImageBitmap(bmp);
+                else thumb.setBackgroundColor(Color.DKGRAY);
+            } else {
+                thumb.setBackgroundColor(Color.DKGRAY);
+                final ImageView thumbRef = thumb;
+                final String thumbPath = path;
+                thumbExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+                            mmr.setDataSource(thumbPath);
+                            final Bitmap bmp = mmr.getFrameAtTime(5000000);
+                            mmr.release();
+                            thumbnailCache.put(thumbPath, bmp);
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (bmp != null) thumbRef.setImageBitmap(bmp);
+                                }
+                            });
+                        } catch (Exception e) {
+                            thumbnailCache.put(thumbPath, null);
+                        }
+                    }
+                });
+            }
+
+            return cell;
         }
     }
 
-    private void loadAndPlay() {
-        loadVideoList();
-        if (!videoFiles.isEmpty()) {
-            playVideo(currentIndex);
+    // --- Playback ---
+
+    private void seekRelative(int ms) {
+        if (videoView == null) return;
+        int current = videoView.getCurrentPosition();
+        int duration = videoView.getDuration();
+        int target = Math.max(0, Math.min(current + ms, duration));
+        videoView.seekTo(target);
+        if (isPaused) {
+            videoView.start();
+            isPaused = false;
         }
     }
+
+    private void playVideo(int index) {
+        if (videoFiles.isEmpty()) return;
+        currentIndex = index;
+        isPaused = false;
+
+        String path = videoFiles.get(currentIndex);
+        videoView.setVideoURI(Uri.parse(path));
+        videoView.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+            @Override
+            public void onPrepared(MediaPlayer mp) {
+                currentPlayer = mp;
+                mp.setLooping(true);
+                mp.start();
+            }
+        });
+        videoView.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+            @Override
+            public boolean onError(MediaPlayer mp, int what, int extra) {
+                nextVideo();
+                return true;
+            }
+        });
+        videoView.start();
+    }
+
+    private void nextVideo() {
+        if (videoFiles.isEmpty()) return;
+        currentIndex = (currentIndex + 1) % videoFiles.size();
+        playVideo(currentIndex);
+    }
+
+    private void prevVideo() {
+        if (videoFiles.isEmpty()) return;
+        currentIndex = (currentIndex - 1 + videoFiles.size()) % videoFiles.size();
+        playVideo(currentIndex);
+    }
+
+    // --- Touch handling ---
+    // Simplified: swipe up/down = next/prev, long press = rewind 10s
+    // Seek bar handles scrubbing. That's it.
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        if (browserVisible) {
+            return super.onTouchEvent(event);
+        }
+        gestureDetector.onTouchEvent(event);
+        return super.onTouchEvent(event);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (browserVisible) {
+            return super.dispatchTouchEvent(event);
+        }
+        // Let the button and seekbar handle their own touches
+        if (browseButton != null && browseButton.getVisibility() == View.VISIBLE) {
+            int[] loc = new int[2];
+            browseButton.getLocationOnScreen(loc);
+            float x = event.getRawX();
+            float y = event.getRawY();
+            if (x >= loc[0] && x <= loc[0] + browseButton.getWidth()
+                && y >= loc[1] && y <= loc[1] + browseButton.getHeight()) {
+                return super.dispatchTouchEvent(event);
+            }
+        }
+        if (seekBar != null && seekBar.getVisibility() == View.VISIBLE) {
+            int[] loc = new int[2];
+            seekBar.getLocationOnScreen(loc);
+            float x = event.getRawX();
+            float y = event.getRawY();
+            // Give seekbar a bigger touch target (extra padding above)
+            if (x >= loc[0] && x <= loc[0] + seekBar.getWidth()
+                && y >= loc[1] - 40 && y <= loc[1] + seekBar.getHeight()) {
+                return super.dispatchTouchEvent(event);
+            }
+        }
+        return onTouchEvent(event);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (browserVisible) {
+            hideBrowser();
+            return;
+        }
+    }
+
+    // --- Storage detection ---
 
     private void detectStorage() {
         for (String sdPath : SD_PATHS) {
@@ -265,362 +559,18 @@ public class MainActivity extends Activity {
         }
     }
 
-    // --- Browse Button ---
-
-    private Button browseButton;
-
-    private void addBrowseButton() {
-        browseButton = new Button(this);
-        browseButton.setText("\uD83C\uDFAC");
-        browseButton.setTextSize(24);
-        browseButton.setBackgroundColor(Color.argb(160, 40, 40, 60));
-        browseButton.setTextColor(Color.WHITE);
-        browseButton.setPadding(16, 8, 16, 8);
-        browseButton.setMinWidth(0);
-        browseButton.setMinHeight(0);
-        browseButton.setMinimumWidth(0);
-        browseButton.setMinimumHeight(0);
-
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.gravity = Gravity.BOTTOM | Gravity.END;
-        params.setMargins(0, 0, 24, 24);
-
-        browseButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showBrowser();
-            }
-        });
-
-        rootLayout.addView(browseButton, params);
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode == PERM_REQUEST && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            loadAndPlay();
+        }
     }
 
-    // --- Video Browser ---
-
-    private void showBrowser() {
-        if (browserVisible) {
-            hideBrowser();
-            return;
-        }
-        // Reload video list to pick up any new content
+    private void loadAndPlay() {
         loadVideoList();
-        browserVisible = true;
-        videoView.pause();
-        if (browseButton != null) browseButton.setVisibility(View.GONE);
-
-        // Create overlay
-        browserOverlay = new LinearLayout(this);
-        ((LinearLayout) browserOverlay).setOrientation(LinearLayout.VERTICAL);
-        browserOverlay.setBackgroundColor(Color.argb(240, 20, 20, 30));
-        browserOverlay.setClickable(true);
-
-        // Title bar
-        TextView titleBar = new TextView(this);
-        titleBar.setText("\uD83C\uDFAC  Pick a Video!");
-        titleBar.setTextColor(Color.WHITE);
-        titleBar.setTextSize(20);
-        titleBar.setGravity(Gravity.CENTER);
-        titleBar.setPadding(0, 40, 0, 20);
-        ((LinearLayout) browserOverlay).addView(titleBar,
-            new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        // Grid
-        browserGrid = new GridView(this);
-        browserGrid.setNumColumns(2);
-        browserGrid.setVerticalSpacing(16);
-        browserGrid.setHorizontalSpacing(16);
-        browserGrid.setPadding(16, 8, 16, 16);
-        browserGrid.setAdapter(new ThumbnailAdapter());
-        browserGrid.setOnItemClickListener(new android.widget.AdapterView.OnItemClickListener() {
-            @Override
-            public void onItemClick(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                hideBrowser();
-                playVideo(position);
-            }
-        });
-
-        ((LinearLayout) browserOverlay).addView(browserGrid,
-            new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        rootLayout.addView(browserOverlay,
-            new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-    }
-
-    private void hideBrowser() {
-        if (browserOverlay != null) {
-            rootLayout.removeView(browserOverlay);
-            browserOverlay = null;
+        if (!videoFiles.isEmpty()) {
+            playVideo(currentIndex);
         }
-        browserVisible = false;
-        browserGrid = null;
-        if (browseButton != null) browseButton.setVisibility(View.VISIBLE);
-        if (!isPaused) videoView.start();
-        hideSystemUI();
-    }
-
-    private class ThumbnailAdapter extends BaseAdapter {
-        @Override
-        public int getCount() { return videoFiles.size(); }
-        @Override
-        public Object getItem(int position) { return videoFiles.get(position); }
-        @Override
-        public long getItemId(int position) { return position; }
-
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            LinearLayout cell;
-            ImageView thumb;
-            TextView label;
-
-            if (convertView == null) {
-                cell = new LinearLayout(MainActivity.this);
-                cell.setOrientation(LinearLayout.VERTICAL);
-                cell.setGravity(Gravity.CENTER);
-                cell.setPadding(8, 8, 8, 8);
-                cell.setBackgroundColor(position == currentIndex ? Color.argb(100, 100, 100, 255) : Color.argb(60, 255, 255, 255));
-
-                thumb = new ImageView(MainActivity.this);
-                thumb.setTag("thumb");
-                thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                int thumbHeight = (int)(getResources().getDisplayMetrics().widthPixels / 2.5);
-                cell.addView(thumb, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, thumbHeight));
-
-                label = new TextView(MainActivity.this);
-                label.setTag("label");
-                label.setTextColor(Color.WHITE);
-                label.setTextSize(12);
-                label.setGravity(Gravity.CENTER);
-                label.setMaxLines(2);
-                label.setPadding(4, 8, 4, 4);
-                cell.addView(label, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            } else {
-                cell = (LinearLayout) convertView;
-                thumb = (ImageView) cell.findViewWithTag("thumb");
-                label = (TextView) cell.findViewWithTag("label");
-            }
-
-            String path = videoFiles.get(position);
-            String title = position < videoTitles.size() ? videoTitles.get(position) : "Video " + (position + 1);
-            label.setText(title);
-
-            // Highlight currently playing
-            cell.setBackgroundColor(position == currentIndex ? Color.argb(100, 100, 100, 255) : Color.argb(60, 255, 255, 255));
-
-            // Load thumbnail
-            if (thumbnailCache.containsKey(path)) {
-                Bitmap bmp = thumbnailCache.get(path);
-                if (bmp != null) thumb.setImageBitmap(bmp);
-                else thumb.setBackgroundColor(Color.DKGRAY);
-            } else {
-                thumb.setBackgroundColor(Color.DKGRAY);
-                final ImageView thumbRef = thumb;
-                final String thumbPath = path;
-                thumbExecutor.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            MediaMetadataRetriever mmr = new MediaMetadataRetriever();
-                            mmr.setDataSource(thumbPath);
-                            final Bitmap bmp = mmr.getFrameAtTime(5000000);
-                            mmr.release();
-                            thumbnailCache.put(thumbPath, bmp);
-                            runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (bmp != null) thumbRef.setImageBitmap(bmp);
-                                }
-                            });
-                        } catch (Exception e) {
-                            thumbnailCache.put(thumbPath, null);
-                        }
-                    }
-                });
-            }
-
-            return cell;
-        }
-    }
-
-    // --- Playback ---
-
-    private void seekRelative(int ms) {
-        if (videoView == null) return;
-        int current = videoView.getCurrentPosition();
-        int duration = videoView.getDuration();
-        int target = Math.max(0, Math.min(current + ms, duration));
-        videoView.seekTo(target);
-        if (isPaused) {
-            videoView.start();
-            isPaused = false;
-        }
-    }
-
-    private void playVideo(int index) {
-        if (videoFiles.isEmpty()) return;
-        currentIndex = index;
-        isPaused = false;
-        clearLoop();
-
-        String path = videoFiles.get(currentIndex);
-        videoView.setVideoURI(Uri.parse(path));
-        videoView.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            @Override
-            public void onPrepared(MediaPlayer mp) {
-                currentPlayer = mp;
-                mp.setLooping(true);
-                mp.start();
-            }
-        });
-        videoView.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-            @Override
-            public boolean onError(MediaPlayer mp, int what, int extra) {
-                nextVideo();
-                return true;
-            }
-        });
-        videoView.start();
-    }
-
-    private void nextVideo() {
-        if (videoFiles.isEmpty()) return;
-        currentIndex = (currentIndex + 1) % videoFiles.size();
-        playVideo(currentIndex);
-    }
-
-    private void prevVideo() {
-        if (videoFiles.isEmpty()) return;
-        currentIndex = (currentIndex - 1 + videoFiles.size()) % videoFiles.size();
-        playVideo(currentIndex);
-    }
-
-    private void togglePause() {
-        if (isPaused) {
-            videoView.start();
-            isPaused = false;
-        } else {
-            videoView.pause();
-            isPaused = true;
-        }
-    }
-
-    // --- A-B Loop ---
-
-    private void handleTwoFingerTap() {
-        if (!loopActive) {
-            if (loopStartMs < 0) {
-                loopStartMs = videoView.getCurrentPosition();
-            } else {
-                loopEndMs = videoView.getCurrentPosition();
-                if (loopEndMs <= loopStartMs) {
-                    int tmp = loopStartMs;
-                    loopStartMs = loopEndMs;
-                    loopEndMs = tmp;
-                }
-                loopActive = true;
-                startLoopChecker();
-            }
-        }
-    }
-
-    private void clearLoop() {
-        loopActive = false;
-        loopStartMs = -1;
-        loopEndMs = -1;
-        loopHandler.removeCallbacksAndMessages(null);
-    }
-
-    private void startLoopChecker() {
-        loopHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (loopActive && videoView != null && videoView.isPlaying()) {
-                    int pos = videoView.getCurrentPosition();
-                    if (pos >= loopEndMs || pos < loopStartMs) {
-                        videoView.seekTo(loopStartMs);
-                    }
-                }
-                if (loopActive) loopHandler.postDelayed(this, 100);
-            }
-        }, 100);
-    }
-
-    // --- Touch handling ---
-
-    private float maxPressureInTouch = 0f;
-    private boolean hardPressHandled = false;
-
-    @Override
-    public boolean onTouchEvent(MotionEvent event) {
-        int action = event.getActionMasked();
-
-        // If browser is visible, let it handle events
-        if (browserVisible) {
-            return super.onTouchEvent(event);
-        }
-
-        // Two-finger tap for A-B loop
-        if (action == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() == 2) {
-            handleTwoFingerTap();
-            return true;
-        }
-
-        // Three-finger tap to clear loop
-        if (action == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() == 3) {
-            clearLoop();
-            return true;
-        }
-
-        // Hard press detection
-        if (action == MotionEvent.ACTION_DOWN) {
-            maxPressureInTouch = event.getPressure();
-            hardPressHandled = false;
-        } else if (action == MotionEvent.ACTION_MOVE) {
-            float p = event.getPressure();
-            if (p > maxPressureInTouch) maxPressureInTouch = p;
-            if (!hardPressHandled && maxPressureInTouch >= HARD_PRESS_THRESHOLD) {
-                long now = System.currentTimeMillis();
-                if ((now - lastHardPressTime) > HARD_PRESS_COOLDOWN) {
-                    lastHardPressTime = now;
-                    hardPressHandled = true;
-                    seekRelative(-10000);
-                    return true;
-                }
-            }
-        }
-
-        gestureDetector.onTouchEvent(event);
-        return super.onTouchEvent(event);
-    }
-
-    @Override
-    public boolean dispatchTouchEvent(MotionEvent event) {
-        if (browserVisible) {
-            return super.dispatchTouchEvent(event);
-        }
-        // Let the button handle its own touches
-        if (browseButton != null && browseButton.getVisibility() == View.VISIBLE) {
-            int[] loc = new int[2];
-            browseButton.getLocationOnScreen(loc);
-            float x = event.getRawX();
-            float y = event.getRawY();
-            if (x >= loc[0] && x <= loc[0] + browseButton.getWidth()
-                && y >= loc[1] && y <= loc[1] + browseButton.getHeight()) {
-                return super.dispatchTouchEvent(event);
-            }
-        }
-        return onTouchEvent(event);
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (browserVisible) {
-            hideBrowser();
-            return;
-        }
-        // Don't let back button exit
     }
 
     private void hideSystemUI() {
@@ -660,7 +610,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        loopHandler.removeCallbacksAndMessages(null);
+        seekHandler.removeCallbacksAndMessages(null);
         thumbExecutor.shutdownNow();
     }
 }
