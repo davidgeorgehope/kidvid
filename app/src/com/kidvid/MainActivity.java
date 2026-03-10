@@ -26,6 +26,7 @@ import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Button;
 import android.widget.VideoView;
 import android.Manifest;
 
@@ -93,6 +94,7 @@ public class MainActivity extends Activity {
         rootLayout = (FrameLayout) videoView.getParent();
         hideSystemUI();
         enableLockTask();
+        addBrowseButton();
 
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             private static final int SWIPE_THRESHOLD = 100;
@@ -263,6 +265,37 @@ public class MainActivity extends Activity {
         }
     }
 
+    // --- Browse Button ---
+
+    private Button browseButton;
+
+    private void addBrowseButton() {
+        browseButton = new Button(this);
+        browseButton.setText("\uD83C\uDFAC");
+        browseButton.setTextSize(24);
+        browseButton.setBackgroundColor(Color.argb(160, 40, 40, 60));
+        browseButton.setTextColor(Color.WHITE);
+        browseButton.setPadding(16, 8, 16, 8);
+        browseButton.setMinWidth(0);
+        browseButton.setMinHeight(0);
+        browseButton.setMinimumWidth(0);
+        browseButton.setMinimumHeight(0);
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.gravity = Gravity.BOTTOM | Gravity.END;
+        params.setMargins(0, 0, 24, 24);
+
+        browseButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showBrowser();
+            }
+        });
+
+        rootLayout.addView(browseButton, params);
+    }
+
     // --- Video Browser ---
 
     private void showBrowser() {
@@ -272,6 +305,7 @@ public class MainActivity extends Activity {
         }
         browserVisible = true;
         videoView.pause();
+        if (browseButton != null) browseButton.setVisibility(View.GONE);
 
         // Create overlay
         browserOverlay = new LinearLayout(this);
@@ -318,6 +352,7 @@ public class MainActivity extends Activity {
         }
         browserVisible = false;
         browserGrid = null;
+        if (browseButton != null) browseButton.setVisibility(View.VISIBLE);
         if (!isPaused) videoView.start();
         hideSystemUI();
     }
@@ -522,12 +557,6 @@ public class MainActivity extends Activity {
         // If browser is visible, let it handle events
         if (browserVisible) {
             return super.onTouchEvent(event);
-        }
-
-        // Four-finger tap to show browser
-        if (action == MotionEvent.ACTION_POINTER_DOWN && event.getPointerCount() == 4) {
-            showBrowser();
-            return true;
         }
 
         // Two-finger tap for A-B loop
