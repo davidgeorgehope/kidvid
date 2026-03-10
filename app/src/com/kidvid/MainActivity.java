@@ -152,7 +152,7 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         params.gravity = Gravity.BOTTOM;
-        params.setMargins(16, 0, 80, 8);
+        params.setMargins(16, 0, 16, 8);
 
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -202,10 +202,10 @@ public class MainActivity extends Activity {
     private void addBrowseButton() {
         browseButton = new Button(this);
         browseButton.setText("\uD83C\uDFAC");
-        browseButton.setTextSize(24);
+        browseButton.setTextSize(32);
         browseButton.setBackgroundColor(Color.argb(160, 40, 40, 60));
         browseButton.setTextColor(Color.WHITE);
-        browseButton.setPadding(16, 8, 16, 8);
+        browseButton.setPadding(24, 16, 24, 16);
         browseButton.setMinWidth(0);
         browseButton.setMinHeight(0);
         browseButton.setMinimumWidth(0);
@@ -213,8 +213,8 @@ public class MainActivity extends Activity {
 
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.gravity = Gravity.BOTTOM | Gravity.END;
-        params.setMargins(0, 0, 24, 24);
+        params.gravity = Gravity.TOP | Gravity.END;
+        params.setMargins(0, 24, 24, 0);
 
         browseButton.setOnClickListener(new View.OnClickListener() {
             @Override
