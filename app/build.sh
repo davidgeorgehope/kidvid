@@ -65,17 +65,19 @@ if [ ! -f "$KEYSTORE" ]; then
         -dname "CN=Debug,O=Android,C=US"
 fi
 
-echo "=== Step 7: Sign APK ==="
+echo "=== Step 7: Zipalign ==="
+"$BT/zipalign" -f 4 "$BIN/kidvid.unsigned.apk" "$BIN/kidvid.aligned.apk"
+
+echo "=== Step 8: Sign APK ==="
 "$BT/apksigner" sign \
     --ks "$KEYSTORE" \
     --ks-pass pass:android \
     --key-pass pass:android \
     --ks-key-alias androiddebugkey \
-    --out "$BIN/kidvid.signed.apk" \
-    "$BIN/kidvid.unsigned.apk"
-
-echo "=== Step 8: Zipalign ==="
-"$BT/zipalign" -f 4 "$BIN/kidvid.signed.apk" "$PROJECT/kidvid.apk"
+    --v1-signing-enabled true \
+    --v2-signing-enabled true \
+    --out "$PROJECT/kidvid.apk" \
+    "$BIN/kidvid.aligned.apk"
 
 echo ""
 echo "=== BUILD SUCCESS ==="
