@@ -598,6 +598,17 @@ public class MainActivity extends Activity {
         if (browserVisible) {
             return super.dispatchTouchEvent(event);
         }
+        // Let the button handle its own touches
+        if (browseButton != null && browseButton.getVisibility() == View.VISIBLE) {
+            int[] loc = new int[2];
+            browseButton.getLocationOnScreen(loc);
+            float x = event.getRawX();
+            float y = event.getRawY();
+            if (x >= loc[0] && x <= loc[0] + browseButton.getWidth()
+                && y >= loc[1] && y <= loc[1] + browseButton.getHeight()) {
+                return super.dispatchTouchEvent(event);
+            }
+        }
         return onTouchEvent(event);
     }
 
