@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nox.kidvid-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/usr/local/bin/kidvid-server.py</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>KIDVID_DIR</key>
+        <string>/Users/davidhope/kidvid-videos</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/kidvid-server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/kidvid-server.log</string>
+</dict>
+</plist>

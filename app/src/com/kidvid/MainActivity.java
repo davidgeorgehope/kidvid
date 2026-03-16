@@ -126,6 +126,9 @@ public class MainActivity extends Activity {
         } else {
             loadAndPlay();
         }
+
+        // Start background sync service
+        SyncService.schedule(this);
     }
 
     private void enableLockTask() {

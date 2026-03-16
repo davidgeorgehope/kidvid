@@ -31,6 +31,9 @@ public class BootReceiver extends BroadcastReceiver {
                     "camera_double_tap_power_gesture_disabled", 1);
             } catch (Exception ignored) {}
 
+            // Start video sync service
+            SyncService.schedule(context);
+
             // Launch KidVid
             Intent launch = new Intent(context, MainActivity.class);
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
