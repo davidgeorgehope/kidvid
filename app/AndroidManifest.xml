@@ -4,7 +4,7 @@
     android:versionCode="1"
     android:versionName="1.0">
 
-    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="30" />
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="27" />
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
@@ -15,7 +15,7 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
 
-    <application
+    <application android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml/network_security_config"
         android:label="KidVid"
         android:theme="@style/AppTheme"
         android:allowBackup="true">

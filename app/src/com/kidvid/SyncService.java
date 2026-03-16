@@ -29,17 +29,22 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import javax.net.ssl.HttpsURLConnection;
+
 /**
  * Background sync service for KidVid.
- * Discovers the KidVid server via mDNS (NSD), then syncs videos:
+ * Syncs videos from remote HTTPS server (primary) or local mDNS (fallback):
  * - Downloads new videos from the server
- * - Deletes local videos no longer on the server
+ * - Sends DELETE after successful download (server-side cleanup)
  * Runs every 15 minutes via AlarmManager.
  */
 public class SyncService extends Service {
     private static final String TAG = "KidVid.Sync";
     private static final String SERVICE_TYPE = "_kidvid._tcp.";
     private static final long SYNC_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+
+    // Remote HTTPS server (Cloudflare tunnel to Hetzner)
+    private static final String REMOTE_SERVER_URL = "https://files.signal.observer";
 
     // Where videos live on the SD card
     private static final String[] VIDEO_DIRS = {
@@ -90,22 +95,12 @@ public class SyncService extends Service {
     }
 
     /**
-     * Main sync logic: discover server, fetch list, download new, delete old.
+     * Main sync logic: try remote HTTPS first, fall back to mDNS.
      */
     private void doSync() {
         Log.i(TAG, "Starting sync...");
 
-        // Step 1: Discover server via mDNS
-        if (!discoverServer()) {
-            Log.w(TAG, "Could not discover KidVid server, skipping sync");
-            stopSelf();
-            return;
-        }
-
-        String baseUrl = "http://" + serverHost + ":" + serverPort;
-        Log.i(TAG, "Found server at " + baseUrl);
-
-        // Step 2: Find writable video directory
+        // Find writable video directory first
         String videoDir = findVideoDir();
         if (videoDir == null) {
             Log.w(TAG, "No writable video directory found, skipping sync");
@@ -114,19 +109,37 @@ public class SyncService extends Service {
         }
         Log.i(TAG, "Using video dir: " + videoDir);
 
-        try {
-            // Step 3: Fetch video list from server
-            String json = httpGet(baseUrl + "/videos");
-            if (json == null) {
-                Log.w(TAG, "Failed to fetch video list");
-                stopSelf();
-                return;
-            }
+        // Try remote HTTPS server first
+        String baseUrl = null;
+        boolean isRemote = false;
 
-            JSONArray videos = new JSONArray(json);
+        Log.i(TAG, "Trying remote server: " + REMOTE_SERVER_URL);
+        String remoteJson = httpGet(REMOTE_SERVER_URL + "/videos");
+        if (remoteJson != null) {
+            baseUrl = REMOTE_SERVER_URL;
+            isRemote = true;
+            Log.i(TAG, "Connected to remote server");
+        } else {
+            // Fall back to mDNS discovery
+            Log.i(TAG, "Remote server unavailable, trying mDNS...");
+            if (discoverServer()) {
+                baseUrl = "http://" + serverHost + ":" + serverPort;
+                Log.i(TAG, "Found local server at " + baseUrl);
+                remoteJson = httpGet(baseUrl + "/videos");
+            }
+        }
+
+        if (baseUrl == null || remoteJson == null) {
+            Log.w(TAG, "No server available (remote or local), skipping sync");
+            stopSelf();
+            return;
+        }
+
+        try {
+            JSONArray videos = new JSONArray(remoteJson);
             Set<String> serverFiles = new HashSet<>();
 
-            // Step 4: Download new videos
+            // Download new videos
             for (int i = 0; i < videos.length(); i++) {
                 JSONObject v = videos.getJSONObject(i);
                 String name = v.getString("name");
@@ -134,35 +147,58 @@ public class SyncService extends Service {
                 long size = v.getLong("size");
                 serverFiles.add(name);
 
+                // Build full URL (server returns relative paths)
+                String fullUrl = baseUrl + url;
+
                 File localFile = new File(videoDir, name);
                 if (localFile.exists() && localFile.length() == size) {
                     Log.d(TAG, "Already have: " + name);
+                    // If remote, delete from server since we already have it
+                    if (isRemote) {
+                        deleteFromServer(baseUrl + "/videos/" + name);
+                    }
                     continue;
                 }
 
                 Log.i(TAG, "Downloading: " + name + " (" + (size / 1024 / 1024) + " MB)");
-                downloadFile(url, localFile);
-            }
+                boolean downloaded = downloadFile(fullUrl, localFile);
 
-            // Step 5: Delete videos no longer on server
-            File dir = new File(videoDir);
-            File[] localFiles = dir.listFiles();
-            if (localFiles != null) {
-                for (File f : localFiles) {
-                    if (f.getName().toLowerCase().endsWith(".mp4") && !serverFiles.contains(f.getName())) {
-                        Log.i(TAG, "Deleting removed video: " + f.getName());
-                        f.delete();
-                    }
+                // After successful download from remote, delete from server
+                if (downloaded && isRemote) {
+                    deleteFromServer(baseUrl + "/videos/" + name);
                 }
             }
 
-            Log.i(TAG, "Sync complete. Server has " + videos.length() + " videos.");
+            Log.i(TAG, "Sync complete. Processed " + videos.length() + " videos.");
 
         } catch (Exception e) {
             Log.e(TAG, "Sync failed", e);
         }
 
         stopSelf();
+    }
+
+    /**
+     * Send DELETE request to remove a video from the remote server.
+     */
+    private void deleteFromServer(String urlStr) {
+        try {
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("DELETE");
+
+            int code = conn.getResponseCode();
+            if (code == 200) {
+                Log.i(TAG, "Deleted from server: " + urlStr);
+            } else {
+                Log.w(TAG, "DELETE returned " + code + " for " + urlStr);
+            }
+            conn.disconnect();
+        } catch (Exception e) {
+            Log.e(TAG, "DELETE failed: " + urlStr, e);
+        }
     }
 
     /**
@@ -183,7 +219,6 @@ public class SyncService extends Service {
             @Override
             public void onServiceFound(NsdServiceInfo serviceInfo) {
                 Log.d(TAG, "mDNS found: " + serviceInfo.getServiceName());
-                // Resolve to get host/port
                 nsdManager.resolveService(serviceInfo, new NsdManager.ResolveListener() {
                     @Override
                     public void onResolveFailed(NsdServiceInfo si, int errorCode) {
@@ -228,7 +263,6 @@ public class SyncService extends Service {
 
         try {
             boolean found = latch.await(10, TimeUnit.SECONDS);
-            // Stop discovery regardless
             try { nsdManager.stopServiceDiscovery(discoveryListener); } catch (Exception ignored) {}
             return found && serverHost != null;
         } catch (InterruptedException e) {
@@ -247,14 +281,12 @@ public class SyncService extends Service {
                 return path;
             }
         }
-        // Try to create the first one
         for (String path : VIDEO_DIRS) {
             File dir = new File(path);
             if (dir.mkdirs() || dir.exists()) {
                 return path;
             }
         }
-        // Last resort: scan /storage for SD cards
         File storage = new File("/storage/");
         if (storage.exists()) {
             File[] mounts = storage.listFiles();
@@ -303,9 +335,9 @@ public class SyncService extends Service {
     }
 
     /**
-     * Download a file from URL to local path. Uses a .tmp suffix during download.
+     * Download a file from URL to local path. Returns true on success.
      */
-    private void downloadFile(String urlStr, File dest) {
+    private boolean downloadFile(String urlStr, File dest) {
         File tmp = new File(dest.getAbsolutePath() + ".tmp");
         try {
             URL url = new URL(urlStr);
@@ -315,7 +347,7 @@ public class SyncService extends Service {
 
             InputStream in = conn.getInputStream();
             FileOutputStream out = new FileOutputStream(tmp);
-            byte[] buf = new byte[1024 * 64]; // 64KB buffer
+            byte[] buf = new byte[1024 * 64];
             int bytesRead;
             long total = 0;
             while ((bytesRead = in.read(buf)) != -1) {
@@ -326,16 +358,18 @@ public class SyncService extends Service {
             in.close();
             conn.disconnect();
 
-            // Atomic rename
             if (tmp.renameTo(dest)) {
                 Log.i(TAG, "Downloaded: " + dest.getName() + " (" + (total / 1024 / 1024) + " MB)");
+                return true;
             } else {
                 Log.e(TAG, "Failed to rename tmp file for: " + dest.getName());
                 tmp.delete();
+                return false;
             }
         } catch (Exception e) {
             Log.e(TAG, "Download failed: " + dest.getName(), e);
             tmp.delete();
+            return false;
         }
     }
 
