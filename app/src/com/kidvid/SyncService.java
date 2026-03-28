@@ -1,13 +1,18 @@
 package com.kidvid;
 
 import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
+import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -36,12 +41,14 @@ import javax.net.ssl.HttpsURLConnection;
  * Syncs videos from remote HTTPS server (primary) or local mDNS (fallback):
  * - Downloads new videos from the server
  * - Sends DELETE after successful download (server-side cleanup)
- * Runs every 15 minutes via AlarmManager.
+ * Runs every 15 minutes via AlarmManager (exact + allow-while-idle to survive Doze).
+ * Uses a foreground notification + wake lock to ensure downloads complete.
  */
 public class SyncService extends Service {
     private static final String TAG = "KidVid.Sync";
     private static final String SERVICE_TYPE = "_kidvid._tcp.";
     private static final long SYNC_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+    private static final String CHANNEL_ID = "kidvid_sync";
 
     // Remote HTTPS server (Cloudflare tunnel to Hetzner)
     private static final String REMOTE_SERVER_URL = "https://files.signal.observer";
@@ -56,18 +63,43 @@ public class SyncService extends Service {
     private NsdManager nsdManager;
     private volatile String serverHost = null;
     private volatile int serverPort = 8642;
+    private PowerManager.WakeLock wakeLock;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        createNotificationChannel();
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.i(TAG, "Sync service started");
+
+        // Start as foreground service so Android doesn't kill us mid-download
+        Notification notification = buildNotification("Syncing videos...");
+        startForeground(1, notification);
+
+        // Acquire wake lock so CPU stays on during download
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kidvid:sync");
+        wakeLock.acquire(10 * 60 * 1000L); // 10 min max
+
         scheduleNextSync();
         executor.execute(new Runnable() {
             @Override
             public void run() {
-                doSync();
+                try {
+                    doSync();
+                } finally {
+                    if (wakeLock != null && wakeLock.isHeld()) {
+                        wakeLock.release();
+                    }
+                    stopForeground(true);
+                    stopSelf();
+                }
             }
         });
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     @Override
@@ -78,20 +110,57 @@ public class SyncService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         executor.shutdownNow();
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID, "KidVid Sync", NotificationManager.IMPORTANCE_LOW);
+            channel.setDescription("Video sync progress");
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) nm.createNotificationChannel(channel);
+        }
+    }
+
+    private Notification buildNotification(String text) {
+        Notification.Builder builder;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder = new Notification.Builder(this, CHANNEL_ID);
+        } else {
+            builder = new Notification.Builder(this);
+        }
+        return builder
+            .setContentTitle("KidVid")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOngoing(true)
+            .build();
     }
 
     /**
      * Schedule the next sync via AlarmManager.
+     * Uses setExactAndAllowWhileIdle to survive Doze mode.
      */
     private void scheduleNextSync() {
         AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         Intent intent = new Intent(this, SyncService.class);
         PendingIntent pi = PendingIntent.getService(this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            SystemClock.elapsedRealtime() + SYNC_INTERVAL_MS, pi);
-        Log.i(TAG, "Next sync scheduled in 15 minutes");
+
+        long triggerAt = SystemClock.elapsedRealtime() + SYNC_INTERVAL_MS;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+        } else {
+            alarmManager.setExact(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+        }
+        Log.i(TAG, "Next sync scheduled in 15 minutes (exact, survives Doze)");
     }
 
     /**
@@ -104,7 +173,6 @@ public class SyncService extends Service {
         String videoDir = findVideoDir();
         if (videoDir == null) {
             Log.w(TAG, "No writable video directory found, skipping sync");
-            stopSelf();
             return;
         }
         Log.i(TAG, "Using video dir: " + videoDir);
@@ -131,7 +199,6 @@ public class SyncService extends Service {
 
         if (baseUrl == null || remoteJson == null) {
             Log.w(TAG, "No server available (remote or local), skipping sync");
-            stopSelf();
             return;
         }
 
@@ -174,8 +241,6 @@ public class SyncService extends Service {
         } catch (Exception e) {
             Log.e(TAG, "Sync failed", e);
         }
-
-        stopSelf();
     }
 
     /**
@@ -185,8 +250,8 @@ public class SyncService extends Service {
         try {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(10000);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(30000);
             conn.setRequestMethod("DELETE");
 
             int code = conn.getResponseCode();
@@ -310,8 +375,8 @@ public class SyncService extends Service {
         try {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(10000);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(30000);
             conn.setRequestMethod("GET");
 
             if (conn.getResponseCode() != 200) {
@@ -336,14 +401,15 @@ public class SyncService extends Service {
 
     /**
      * Download a file from URL to local path. Returns true on success.
+     * Uses generous timeouts for large video files over mobile/WiFi.
      */
     private boolean downloadFile(String urlStr, File dest) {
         File tmp = new File(dest.getAbsolutePath() + ".tmp");
         try {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(30000);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(5 * 60 * 1000); // 5 min read timeout for large files
 
             InputStream in = conn.getInputStream();
             FileOutputStream out = new FileOutputStream(tmp);
@@ -378,6 +444,10 @@ public class SyncService extends Service {
      */
     public static void schedule(Context context) {
         Intent intent = new Intent(context, SyncService.class);
-        context.startService(intent);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
     }
 }
