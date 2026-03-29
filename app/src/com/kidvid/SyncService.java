@@ -53,10 +53,10 @@ public class SyncService extends Service {
     // Remote HTTPS server (Cloudflare tunnel to Hetzner)
     private static final String REMOTE_SERVER_URL = "https://files.signal.observer";
 
-    // Where videos live on the SD card
+    // Where videos live — internal storage first (SD card has EPERM on Android 11)
     private static final String[] VIDEO_DIRS = {
-        "/storage/AE60-81BC/kidvid/videos/",
-        "/sdcard/kidvid/videos/"
+        "/sdcard/kidvid/videos/",
+        "/storage/AE60-81BC/kidvid/videos/"
     };
 
     private ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -344,33 +344,40 @@ public class SyncService extends Service {
 
     /**
      * Find the first writable video directory.
+     * Android 11 scoped storage blocks writes to shared/SD storage from services.
+     * Use app-specific external storage as primary (no permissions needed).
      */
     private String findVideoDir() {
+        // Try app-specific external storage first (no permissions needed, survives app updates)
+        File appExtDir = new File(getExternalFilesDir(null), "videos");
+        if (appExtDir.exists() || appExtDir.mkdirs()) {
+            Log.i(TAG, "Using app-specific external storage: " + appExtDir.getAbsolutePath());
+            return appExtDir.getAbsolutePath() + "/";
+        }
+
+        // Fallback to configured paths
         for (String path : VIDEO_DIRS) {
             File dir = new File(path);
             if (dir.exists() && dir.canWrite()) {
-                return path;
-            }
-        }
-        for (String path : VIDEO_DIRS) {
-            File dir = new File(path);
-            if (dir.mkdirs() || dir.exists()) {
-                return path;
-            }
-        }
-        File storage = new File("/storage/");
-        if (storage.exists()) {
-            File[] mounts = storage.listFiles();
-            if (mounts != null) {
-                for (File mount : mounts) {
-                    if (mount.getName().equals("emulated") || mount.getName().equals("self")) continue;
-                    File vidDir = new File(mount, "kidvid/videos/");
-                    if (vidDir.exists() || vidDir.mkdirs()) {
-                        return vidDir.getAbsolutePath() + "/";
+                // Test actual write
+                try {
+                    File test = new File(dir, ".write_test");
+                    if (test.createNewFile()) {
+                        test.delete();
+                        return path;
                     }
+                } catch (Exception e) {
+                    Log.w(TAG, "Write test failed for " + path + ": " + e.getMessage());
                 }
             }
         }
+
+        // Last resort: app internal storage
+        File intDir = new File(getFilesDir(), "videos");
+        if (intDir.exists() || intDir.mkdirs()) {
+            return intDir.getAbsolutePath() + "/";
+        }
+
         return null;
     }
 

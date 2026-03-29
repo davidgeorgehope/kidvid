@@ -589,6 +589,12 @@ public class MainActivity extends Activity {
             loadManifestTitles(new File(MANIFEST_FILE), titleMap);
         }
 
+        // Also scan app-specific external storage (where SyncService downloads to)
+        File appExtVids = new File(getExternalFilesDir(null), "videos");
+        if (appExtVids.exists() && appExtVids.isDirectory() && !videoDirs.contains(appExtVids.getAbsolutePath())) {
+            videoDirs.add(appExtVids.getAbsolutePath());
+        }
+
         // Scan all directories for video files
         for (String dirPath : videoDirs) {
             File dir = new File(dirPath);
