@@ -30,6 +30,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.VideoView;
 import android.Manifest;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -247,13 +248,53 @@ public class MainActivity extends Activity {
         browserOverlay.setBackgroundColor(Color.argb(240, 20, 20, 30));
         browserOverlay.setClickable(true);
 
+        // Title bar with sync button
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        titleRow.setPadding(16, 40, 16, 20);
+
         TextView titleBar = new TextView(this);
         titleBar.setText("\uD83C\uDFAC  Pick a Video!");
         titleBar.setTextColor(Color.WHITE);
         titleBar.setTextSize(20);
         titleBar.setGravity(Gravity.CENTER);
-        titleBar.setPadding(0, 40, 0, 20);
-        ((LinearLayout) browserOverlay).addView(titleBar,
+        titleRow.addView(titleBar,
+            new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button syncButton = new Button(this);
+        syncButton.setText("\uD83D\uDD04");
+        syncButton.setTextSize(24);
+        syncButton.setBackgroundColor(Color.argb(160, 40, 40, 60));
+        syncButton.setTextColor(Color.WHITE);
+        syncButton.setPadding(24, 8, 24, 8);
+        syncButton.setMinWidth(0);
+        syncButton.setMinHeight(0);
+        syncButton.setMinimumWidth(0);
+        syncButton.setMinimumHeight(0);
+        syncButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Toast.makeText(MainActivity.this, "Syncing...", Toast.LENGTH_SHORT).show();
+                SyncService.schedule(MainActivity.this);
+                // Refresh the grid after a delay to pick up new files
+                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (browserVisible && browserGrid != null) {
+                            loadVideoList();
+                            ((ThumbnailAdapter) browserGrid.getAdapter()).notifyDataSetChanged();
+                            Toast.makeText(MainActivity.this,
+                                videoFiles.size() + " videos", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                }, 5000);
+            }
+        });
+        titleRow.addView(syncButton,
+            new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        ((LinearLayout) browserOverlay).addView(titleRow,
             new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         browserGrid = new GridView(this);
