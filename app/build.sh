@@ -2,7 +2,7 @@
 set -e
 
 SDK="/opt/homebrew/share/android-commandlinetools"
-BT="$SDK/build-tools/34.0.0"
+BT="$SDK/build-tools/35.0.0"
 PLATFORM="$SDK/platforms/android-30/android.jar"
 JAVAC="/usr/bin/javac"
 

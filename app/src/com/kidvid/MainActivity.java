@@ -512,53 +512,97 @@ public class MainActivity extends Activity {
     private void loadVideoList() {
         videoFiles.clear();
         videoTitles.clear();
-        detectStorage();
 
-        File manifest = new File(activeManifest);
-        if (manifest.exists()) {
-            try {
-                FileInputStream fis = new FileInputStream(manifest);
-                byte[] data = new byte[(int) manifest.length()];
-                fis.read(data);
-                fis.close();
-                String content = new String(data, StandardCharsets.UTF_8).trim();
-                JSONArray videos;
-                if (content.startsWith("[")) {
-                    videos = new JSONArray(content);
-                } else {
-                    JSONObject json = new JSONObject(content);
-                    videos = json.getJSONArray("videos");
-                }
-                for (int i = 0; i < videos.length(); i++) {
-                    JSONObject v = videos.getJSONObject(i);
-                    String filename = v.getString("filename");
-                    String title = v.optString("title", filename.replace(".mp4", "").replace("_", " "));
-                    File f = new File(activeVideosDir + filename);
-                    if (f.exists()) {
-                        videoFiles.add(f.getAbsolutePath());
-                        videoTitles.add(title);
-                    }
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
+        // Build a title lookup from all manifest files
+        Map<String, String> titleMap = new HashMap<>();
+        List<String> videoDirs = new ArrayList<>();
+
+        // Collect all video directories
+        for (String sdPath : SD_PATHS) {
+            File sdVids = new File(sdPath + "videos/");
+            if (sdVids.exists() && sdVids.isDirectory()) {
+                videoDirs.add(sdVids.getAbsolutePath());
+                loadManifestTitles(new File(sdPath + "manifest.json"), titleMap);
             }
         }
+        // Scan /storage/ for additional mounts
+        File storage = new File("/storage/");
+        if (storage.exists()) {
+            File[] mounts = storage.listFiles();
+            if (mounts != null) {
+                for (File mount : mounts) {
+                    if (mount.getName().equals("emulated") || mount.getName().equals("self")) continue;
+                    File sdVids = new File(mount, "kidvid/videos/");
+                    String path = sdVids.getAbsolutePath();
+                    if (sdVids.exists() && sdVids.isDirectory() && !videoDirs.contains(path)) {
+                        videoDirs.add(path);
+                        loadManifestTitles(new File(mount, "kidvid/manifest.json"), titleMap);
+                    }
+                }
+            }
+        }
+        // Always include internal storage
+        File internalVids = new File(VIDEOS_DIR);
+        if (internalVids.exists() && internalVids.isDirectory() && !videoDirs.contains(internalVids.getAbsolutePath())) {
+            videoDirs.add(internalVids.getAbsolutePath());
+            loadManifestTitles(new File(MANIFEST_FILE), titleMap);
+        }
 
-        if (videoFiles.isEmpty()) {
-            File dir = new File(activeVideosDir);
-            if (dir.exists() && dir.isDirectory()) {
-                File[] files = dir.listFiles();
-                if (files != null) {
-                    java.util.Arrays.sort(files);
-                    for (File f : files) {
-                        String name = f.getName().toLowerCase();
-                        if (name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".webm") || name.endsWith(".3gp")) {
-                            videoFiles.add(f.getAbsolutePath());
-                            videoTitles.add(f.getName().replace(".mp4", "").replace("_", " "));
+        // Scan all directories for video files
+        for (String dirPath : videoDirs) {
+            File dir = new File(dirPath);
+            File[] files = dir.listFiles();
+            if (files != null) {
+                java.util.Arrays.sort(files);
+                for (File f : files) {
+                    String name = f.getName().toLowerCase();
+                    if (name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".webm") || name.endsWith(".3gp")) {
+                        String absPath = f.getAbsolutePath();
+                        if (!videoFiles.contains(absPath)) {
+                            videoFiles.add(absPath);
+                            String title = titleMap.get(f.getName());
+                            if (title == null) {
+                                title = f.getName().replaceAll("\\.[^.]+$", "").replace("_", " ").replace("-", " ");
+                            }
+                            videoTitles.add(title);
                         }
                     }
                 }
             }
+        }
+
+        // Update activeVideosDir to first directory that has videos
+        if (!videoDirs.isEmpty()) {
+            activeVideosDir = videoDirs.get(0) + "/";
+        }
+    }
+
+    private void loadManifestTitles(File manifest, Map<String, String> titleMap) {
+        if (!manifest.exists()) return;
+        try {
+            FileInputStream fis = new FileInputStream(manifest);
+            byte[] data = new byte[(int) manifest.length()];
+            fis.read(data);
+            fis.close();
+            String content = new String(data, StandardCharsets.UTF_8).trim();
+            if (content.isEmpty()) return;
+            JSONArray videos;
+            if (content.startsWith("[")) {
+                videos = new JSONArray(content);
+            } else {
+                JSONObject json = new JSONObject(content);
+                videos = json.getJSONArray("videos");
+            }
+            for (int i = 0; i < videos.length(); i++) {
+                JSONObject v = videos.getJSONObject(i);
+                String filename = v.getString("filename");
+                String title = v.optString("title", null);
+                if (title != null) {
+                    titleMap.put(filename, title);
+                }
+            }
+        } catch (Exception e) {
+            // Ignore bad manifest - we'll generate titles from filenames
         }
     }
 
