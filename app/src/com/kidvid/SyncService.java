@@ -144,11 +144,13 @@ public class SyncService extends Service {
     /**
      * Schedule the next sync via AlarmManager.
      * Uses setExactAndAllowWhileIdle to survive Doze mode.
+     * Routes through SyncAlarmReceiver so we can call startForegroundService()
+     * (PendingIntent.getService() uses startService() which Android 11+ blocks).
      */
     private void scheduleNextSync() {
         AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        Intent intent = new Intent(this, SyncService.class);
-        PendingIntent pi = PendingIntent.getService(this, 0, intent,
+        Intent intent = new Intent(this, SyncAlarmReceiver.class);
+        PendingIntent pi = PendingIntent.getBroadcast(this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         long triggerAt = SystemClock.elapsedRealtime() + SYNC_INTERVAL_MS;
