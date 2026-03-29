@@ -241,6 +241,10 @@ public class SyncService extends Service {
         } catch (Exception e) {
             Log.e(TAG, "Sync failed", e);
         }
+
+        // Notify any listening activity that sync is done
+        Intent done = new Intent("com.kidvid.SYNC_DONE");
+        sendBroadcast(done);
     }
 
     /**
