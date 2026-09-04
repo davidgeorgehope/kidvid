@@ -1,8 +1,11 @@
 package com.kidvid;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -13,11 +16,13 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.BaseAdapter;
@@ -83,6 +88,35 @@ public class MainActivity extends Activity {
     // Browse button
     private Button browseButton;
 
+    // --- Lockdown / parent exit ---
+    // Soft mode (no Device Owner): screen-pin + sticky bring-to-front.
+    // Hard mode (Device Owner): full lock-task policies + preferred HOME.
+    private boolean parentExitRequested = false;
+    private boolean deviceOwnerMode = false;
+    private final Handler stickyHandler = new Handler(Looper.getMainLooper());
+    private static final long STICKY_RETURN_DELAY_MS = 250;
+    private static final int PARENT_EXIT_TAPS = 7;
+    private static final long PARENT_EXIT_WINDOW_MS = 2500;
+    private static final float PARENT_EXIT_CORNER_FRACTION = 0.18f;
+    private int parentExitTapCount = 0;
+    private long parentExitWindowStart = 0;
+    private final Runnable stickyReturnRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (parentExitRequested || isFinishing()) return;
+            // Don't fight a screen-off pause; resume + pin when the display wakes.
+            try {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                if (pm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH
+                        && !pm.isInteractive()) {
+                    return;
+                }
+            } catch (Exception ignored) {}
+            bringKidVidToFront();
+            pinScreen();
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -90,6 +124,7 @@ public class MainActivity extends Activity {
 
         videoView = findViewById(R.id.videoView);
         rootLayout = (FrameLayout) videoView.getParent();
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemUI();
         enableLockTask();
         addBrowseButton();
@@ -117,12 +152,19 @@ public class MainActivity extends Activity {
 
             @Override
             public void onLongPress(MotionEvent e) {
-                // Long press = rewind 10 seconds
+                // Long press in bottom-left corner = parent exit (deliberate).
+                // Elsewhere = rewind 10 seconds (existing kid gesture).
+                if (e != null && isInParentExitCorner(e.getRawX(), e.getRawY())) {
+                    requestParentExit();
+                    return;
+                }
                 seekRelative(-10000);
             }
         });
 
-        if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, PERM_REQUEST);
         } else {
             loadAndPlay();
@@ -132,17 +174,113 @@ public class MainActivity extends Activity {
         SyncService.schedule(this);
     }
 
+    /**
+     * Soft pin always; Device Owner hardens lock-task features when available.
+     * Fire tablets often cannot set Device Owner without a factory reset — soft
+     * mode + sticky return is the default path that still works.
+     */
     private void enableLockTask() {
-        try {
-            DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
-            ComponentName admin = new ComponentName(this, KidVidDeviceAdmin.class);
-            if (dpm != null && dpm.isDeviceOwnerApp(getPackageName())) {
+        DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+        ComponentName admin = new ComponentName(this, KidVidDeviceAdmin.class);
+        deviceOwnerMode = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
+
+        if (deviceOwnerMode) {
+            try {
                 dpm.setLockTaskPackages(admin, new String[]{getPackageName()});
-                startLockTask();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    // Hide Home / Recents / notifications while locked in.
+                    dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE);
+                }
+                try {
+                    dpm.setKeyguardDisabled(admin, true);
+                } catch (Exception ignored) {}
+                try {
+                    dpm.setStatusBarDisabled(admin, true);
+                } catch (Exception ignored) {}
+                // Prefer KidVid as HOME so Amazon launcher is less sticky.
+                try {
+                    IntentFilter homeFilter = new IntentFilter(Intent.ACTION_MAIN);
+                    homeFilter.addCategory(Intent.CATEGORY_HOME);
+                    homeFilter.addCategory(Intent.CATEGORY_DEFAULT);
+                    dpm.addPersistentPreferredActivity(admin, homeFilter,
+                        new ComponentName(this, MainActivity.class));
+                } catch (Exception ignored) {}
+            } catch (Exception e) {
+                // Device owner APIs can still fail on quirky Fire builds.
             }
-        } catch (Exception e) {
-            // Not device owner or already in lock task
         }
+
+        pinScreen();
+    }
+
+    private void pinScreen() {
+        if (parentExitRequested || isFinishing()) return;
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                int state = am.getLockTaskModeState();
+                if (state != ActivityManager.LOCK_TASK_MODE_NONE) {
+                    return;
+                }
+            }
+            startLockTask();
+        } catch (Exception e) {
+            // Soft pin may need a one-time confirm dialog on first use.
+        }
+    }
+
+    private void scheduleStickyReturn() {
+        if (parentExitRequested || isFinishing()) return;
+        stickyHandler.removeCallbacks(stickyReturnRunnable);
+        stickyHandler.postDelayed(stickyReturnRunnable, STICKY_RETURN_DELAY_MS);
+    }
+
+    private void bringKidVidToFront() {
+        try {
+            Intent launch = new Intent(this, MainActivity.class);
+            launch.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(launch);
+        } catch (Exception ignored) {}
+    }
+
+    private boolean isInParentExitCorner(float rawX, float rawY) {
+        int w = getResources().getDisplayMetrics().widthPixels;
+        int h = getResources().getDisplayMetrics().heightPixels;
+        float cornerW = w * PARENT_EXIT_CORNER_FRACTION;
+        float cornerH = h * PARENT_EXIT_CORNER_FRACTION;
+        return rawX <= cornerW && rawY >= (h - cornerH);
+    }
+
+    private void noteParentExitTap(float rawX, float rawY) {
+        if (!isInParentExitCorner(rawX, rawY)) {
+            parentExitTapCount = 0;
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - parentExitWindowStart > PARENT_EXIT_WINDOW_MS) {
+            parentExitTapCount = 0;
+            parentExitWindowStart = now;
+        }
+        parentExitTapCount++;
+        if (parentExitTapCount >= PARENT_EXIT_TAPS) {
+            parentExitTapCount = 0;
+            requestParentExit();
+        }
+    }
+
+    /** Deliberate parent exit: unpin, stop sticky return, leave the app. */
+    private void requestParentExit() {
+        if (parentExitRequested) return;
+        parentExitRequested = true;
+        stickyHandler.removeCallbacks(stickyReturnRunnable);
+        try {
+            stopLockTask();
+        } catch (Exception ignored) {}
+        Toast.makeText(this, "Parent exit", Toast.LENGTH_SHORT).show();
+        finish();
     }
 
     // --- Seek Bar ---
@@ -478,6 +616,9 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            noteParentExitTap(event.getRawX(), event.getRawY());
+        }
         if (browserVisible) {
             return super.dispatchTouchEvent(event);
         }
@@ -511,6 +652,11 @@ public class MainActivity extends Activity {
         if (browserVisible) {
             hideBrowser();
             return;
+        }
+        // Swallow Back so kids cannot casually leave. Parents use corner exit.
+        if (!parentExitRequested) {
+            pinScreen();
+            hideSystemUI();
         }
     }
 
@@ -668,6 +814,7 @@ public class MainActivity extends Activity {
     }
 
     private void hideSystemUI() {
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             getWindow().setDecorFitsSystemWindows(false);
             WindowInsetsController controller = getWindow().getInsetsController();
@@ -689,13 +836,34 @@ public class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) hideSystemUI();
+        if (hasFocus) {
+            hideSystemUI();
+            if (!parentExitRequested) pinScreen();
+        } else if (!parentExitRequested) {
+            scheduleStickyReturn();
+        }
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        scheduleStickyReturn();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        scheduleStickyReturn();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        stickyHandler.removeCallbacks(stickyReturnRunnable);
         hideSystemUI();
+        if (!parentExitRequested) {
+            pinScreen();
+        }
         if (videoView != null && !videoView.isPlaying() && !isPaused && !browserVisible) {
             videoView.start();
         }
@@ -703,6 +871,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stickyHandler.removeCallbacks(stickyReturnRunnable);
         super.onDestroy();
         seekHandler.removeCallbacksAndMessages(null);
         thumbExecutor.shutdownNow();

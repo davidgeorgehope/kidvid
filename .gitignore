@@ -1,0 +1,8 @@
+# Build outputs from app/build.sh
+app/bin/
+app/gen/
+app/obj/
+app/kidvid.apk
+app/*.apk
+*.dex
+.DS_Store
