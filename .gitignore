@@ -4,5 +4,6 @@ app/gen/
 app/obj/
 app/kidvid.apk
 app/*.apk
+app/*.idsig
 *.dex
 .DS_Store

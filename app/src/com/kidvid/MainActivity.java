@@ -152,7 +152,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onLongPress(MotionEvent e) {
-                // Long press in bottom-left corner = parent exit (deliberate).
+                // Long press in top-left corner = parent exit (deliberate).
                 // Elsewhere = rewind 10 seconds (existing kid gesture).
                 if (e != null && isInParentExitCorner(e.getRawX(), e.getRawY())) {
                     requestParentExit();
@@ -251,7 +251,8 @@ public class MainActivity extends Activity {
         int h = getResources().getDisplayMetrics().heightPixels;
         float cornerW = w * PARENT_EXIT_CORNER_FRACTION;
         float cornerH = h * PARENT_EXIT_CORNER_FRACTION;
-        return rawX <= cornerW && rawY >= (h - cornerH);
+        // Top-left: avoids seek bar (bottom) and browse button (top-right).
+        return rawX <= cornerW && rawY <= cornerH;
     }
 
     private void noteParentExitTap(float rawX, float rawY) {
@@ -621,6 +622,10 @@ public class MainActivity extends Activity {
         }
         if (browserVisible) {
             return super.dispatchTouchEvent(event);
+        }
+        // Parent-exit corner must reach the gesture detector (not seek/browse).
+        if (isInParentExitCorner(event.getRawX(), event.getRawY())) {
+            return onTouchEvent(event);
         }
         // Let the button and seekbar handle their own touches
         if (browseButton != null && browseButton.getVisibility() == View.VISIBLE) {

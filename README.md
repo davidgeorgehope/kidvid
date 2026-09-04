@@ -45,8 +45,8 @@ Soft pin alone is escapable on Fire (Amazon launcher + unpin gestures). Sticky r
 
 While KidVid is running:
 
-1. **7 quick taps** in the **bottom-left corner**, or
-2. **Long-press** the **bottom-left corner**
+1. **7 quick taps** in the **top-left corner**, or
+2. **Long-press** the **top-left corner**
 
 That calls `stopLockTask`, disables sticky return, shows “Parent exit”, and finishes the activity.
 
