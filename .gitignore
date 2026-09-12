@@ -1,0 +1,6 @@
+# Build outputs
+app/bin/
+app/gen/
+app/obj/
+app/kidvid.apk
+*.apk

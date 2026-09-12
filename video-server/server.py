@@ -33,11 +33,26 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         else:
             self._send_error(404, "Not found")
 
+    def do_DELETE(self):
+        """Remove a queued video — matches Hetzner files.signal.observer DELETE /videos/<name>."""
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        if not path.startswith("/videos/"):
+            self._send_error(404, "not found")
+            return
+        filename = urllib.parse.unquote(path[len("/videos/"):])
+        self._delete_file(filename)
+
     def _serve_index(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"KidVid Video Server\n\nGET /videos — list videos\nGET /videos/<name> — download video\n")
+        self.wfile.write(
+            b"KidVid Video Server\n\n"
+            b"GET /videos - list videos\n"
+            b"GET /videos/<name> - download video\n"
+            b"DELETE /videos/<name> - remove from queue\n"
+        )
 
     def _serve_video_list(self):
         videos = []
@@ -81,6 +96,27 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
                 if not chunk:
                     break
                 self.wfile.write(chunk)
+
+    def _delete_file(self, filename):
+        if "/" in filename or "\\" in filename or ".." in filename or not filename:
+            self._send_error(400, "invalid name")
+            return
+
+        filepath = Path(VIDEO_DIR) / filename
+        if not filepath.exists() or not filepath.is_file():
+            self._send_error(404, "not found")
+            return
+
+        try:
+            filepath.unlink()
+        except OSError as e:
+            self._send_error(500, str(e))
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"deleted": filename}).encode())
 
     def _send_error(self, code, message):
         self.send_response(code)

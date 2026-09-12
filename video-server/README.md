@@ -7,6 +7,24 @@ Simple HTTP server that serves `.mp4` files from a directory and advertises itse
 - `GET /` — server info
 - `GET /videos` — JSON list of all `.mp4` files (name, size, URL)
 - `GET /videos/<filename>` — download a video file
+- `DELETE /videos/<filename>` — remove a video from the queue (same path naming as list/GET)
+
+## Remote API (Hetzner / Cloudflare)
+
+Production queue: `https://files.signal.observer` (GET + DELETE only; no upload).
+
+```bash
+# Health / known device labels (phone, fire)
+curl -s https://files.signal.observer/health
+
+# List queue (same names the Android app syncs)
+curl -s https://files.signal.observer/videos
+
+# Delete so a file does not reappear on next device sync
+curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+```
+
+The Android parent-delete flow calls this same `DELETE /videos/<filename>` after a 5s grid hold + PIN.
 
 ## Quick Start
 

@@ -250,9 +250,46 @@ public class SyncService extends Service {
     }
 
     /**
+     * Device queue label for ops (Hetzner layout lists phone + fire under /health).
+     * Sync/list/DELETE HTTP paths stay /videos/<filename> — same for both devices.
+     */
+    public static String deviceQueue() {
+        String blob = ((Build.MANUFACTURER == null ? "" : Build.MANUFACTURER) + " "
+                + (Build.MODEL == null ? "" : Build.MODEL) + " "
+                + (Build.PRODUCT == null ? "" : Build.PRODUCT)).toLowerCase();
+        if (blob.contains("amazon") || blob.contains("kf") || blob.contains("fire")) {
+            return "fire";
+        }
+        return "phone";
+    }
+
+    /**
+     * Parent-delete / CoS helper: DELETE https://files.signal.observer/videos/&lt;filename&gt;
+     * Matches list API naming (GET /videos → name field). Treats 200 and 404 as success
+     * (404 = already removed from the queue, so it will not reappear on next sync).
+     *
+     * curl example:
+     *   curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+     */
+    public static boolean deleteRemoteVideo(String filename) {
+        if (filename == null || filename.isEmpty()) return false;
+        if (filename.contains("/") || filename.contains("\\") || filename.contains("..")) {
+            Log.w(TAG, "Refusing DELETE with unsafe filename: " + filename);
+            return false;
+        }
+        String urlStr = REMOTE_SERVER_URL + "/videos/" + filename;
+        return deleteFromServerUrl(urlStr);
+    }
+
+    /**
      * Send DELETE request to remove a video from the remote server.
+     * Returns true on HTTP 200 or 404 (already gone).
      */
     private void deleteFromServer(String urlStr) {
+        deleteFromServerUrl(urlStr);
+    }
+
+    private static boolean deleteFromServerUrl(String urlStr) {
         try {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -261,14 +298,16 @@ public class SyncService extends Service {
             conn.setRequestMethod("DELETE");
 
             int code = conn.getResponseCode();
-            if (code == 200) {
-                Log.i(TAG, "Deleted from server: " + urlStr);
-            } else {
-                Log.w(TAG, "DELETE returned " + code + " for " + urlStr);
-            }
             conn.disconnect();
+            if (code == 200 || code == 404) {
+                Log.i(TAG, "Deleted from server (HTTP " + code + "): " + urlStr);
+                return true;
+            }
+            Log.w(TAG, "DELETE returned " + code + " for " + urlStr);
+            return false;
         } catch (Exception e) {
             Log.e(TAG, "DELETE failed: " + urlStr, e);
+            return false;
         }
     }
 

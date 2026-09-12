@@ -32,6 +32,23 @@ A dedicated offline kids video player built from a spare Android phone. YouTube 
 - Works completely offline
 - No ads, no algorithms, no rabbit holes
 
+### Parent delete (from the phone / Fire app)
+Junk that slipped into the library (e.g. a Shorts face-gag) can be removed without a computer:
+
+1. Open the video picker (film button).
+2. **Press and hold** a thumbnail for **~5 seconds** (a normal tap still just plays).
+3. Enter parent PIN **`123456`**.
+4. On success the file is deleted from the device **and** `DELETE`d from `https://files.signal.observer/videos/<filename>` so sync will not bring it back.
+
+Wrong PIN or Cancel leaves the library unchanged. Lock-task / sticky lockdown behavior is untouched.
+
+Remote delete (CoS / scripts), same path the app uses:
+
+```bash
+curl -s https://files.signal.observer/videos
+curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+```
+
 ## Building the APK
 
 ```bash
