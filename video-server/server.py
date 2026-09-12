@@ -14,7 +14,7 @@ import threading
 import urllib.parse
 from pathlib import Path
 
-PORT = 8642
+PORT = 8643
 VIDEO_DIR = os.environ.get("KIDVID_DIR", os.path.expanduser("~/kidvid-videos"))
 SERVICE_NAME = "_kidvid._tcp"
 KNOWN_DEVICES = ("phone", "fire")
