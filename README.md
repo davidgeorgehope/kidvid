@@ -32,6 +32,36 @@ A dedicated offline kids video player built from a spare Android phone. YouTube 
 - Works completely offline
 - No ads, no algorithms, no rabbit holes
 
+### Parent delete (from the phone / Fire app)
+Junk that slipped into the library (e.g. a Shorts face-gag) can be removed without a computer:
+
+1. Open the video picker (film button).
+2. **Press and hold** a thumbnail for **~5 seconds** (a normal tap still just plays).
+3. Enter parent PIN **`123456`**.
+4. On success the file is deleted from the device, removed from the download queue (`DELETE /videos/<filename>`), and teed as a pending delete for phone + fire so the other device drops it on next sync.
+
+Wrong PIN or Cancel leaves the library unchanged. Lock-task / sticky lockdown behavior is untouched.
+
+### Remote delete (CoS / scripts — no adb)
+After a device has already drained `/videos`, tee a **pending delete**. On the next sync the app removes the local file and clears the marker:
+
+```bash
+# Still in the download queue? Remove it so it is not fetched again:
+curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+
+# Already on devices (queue empty)? Tee a durable pending delete:
+curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=phone"
+curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=fire"
+# Or both devices at once (omit ?device=):
+curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4"
+
+# Inspect / clear markers:
+curl -s "https://files.signal.observer/deletes?device=phone"
+curl -X DELETE "https://files.signal.observer/deletes/SOME_FILE.mp4?device=phone"
+```
+
+Requires the KidVid server build that serves `deletes.json` (see `video-server/`). Deploy that to Hetzner behind `files.signal.observer` for production.
+
 ## Building the APK
 
 ```bash

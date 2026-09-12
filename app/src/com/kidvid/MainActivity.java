@@ -1,6 +1,7 @@
 package com.kidvid;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.pm.PackageManager;
@@ -13,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -22,6 +24,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.BaseAdapter;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.ImageView;
@@ -82,6 +85,16 @@ public class MainActivity extends Activity {
 
     // Browse button
     private Button browseButton;
+
+    // Parent-gated delete: hold a grid item ~5s, then PIN (kids must not discover casually)
+    private static final long PARENT_DELETE_HOLD_MS = 5000;
+    private static final String PARENT_DELETE_PIN = "123456";
+    private final Handler deleteHoldHandler = new Handler(Looper.getMainLooper());
+    private Runnable deleteHoldRunnable;
+    private int deleteHoldPosition = -1;
+    private boolean deleteHoldTriggered = false;
+    private float deleteHoldStartX;
+    private float deleteHoldStartY;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -306,6 +319,11 @@ public class MainActivity extends Activity {
         browserGrid.setOnItemClickListener(new android.widget.AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                // Ignore the click that follows a completed 5s parent-delete hold
+                if (deleteHoldTriggered) {
+                    deleteHoldTriggered = false;
+                    return;
+                }
                 hideBrowser();
                 playVideo(position);
             }
@@ -319,6 +337,8 @@ public class MainActivity extends Activity {
     }
 
     private void hideBrowser() {
+        cancelParentDeleteHold();
+        deleteHoldTriggered = false;
         if (browserOverlay != null) {
             rootLayout.removeView(browserOverlay);
             browserOverlay = null;
@@ -329,6 +349,141 @@ public class MainActivity extends Activity {
         if (seekBar != null) seekBar.setVisibility(View.VISIBLE);
         if (!isPaused) videoView.start();
         hideSystemUI();
+    }
+
+    // --- Parent-gated delete (5s hold + PIN) ---
+
+    private void startParentDeleteHold(final int position) {
+        cancelParentDeleteHold();
+        deleteHoldPosition = position;
+        deleteHoldRunnable = new Runnable() {
+            @Override
+            public void run() {
+                deleteHoldTriggered = true;
+                deleteHoldRunnable = null;
+                showParentDeletePinDialog(position);
+            }
+        };
+        deleteHoldHandler.postDelayed(deleteHoldRunnable, PARENT_DELETE_HOLD_MS);
+    }
+
+    private void cancelParentDeleteHold() {
+        if (deleteHoldRunnable != null) {
+            deleteHoldHandler.removeCallbacks(deleteHoldRunnable);
+            deleteHoldRunnable = null;
+        }
+        deleteHoldPosition = -1;
+    }
+
+    private void showParentDeletePinDialog(final int position) {
+        if (isFinishing() || position < 0 || position >= videoFiles.size()) return;
+
+        String title = position < videoTitles.size() ? videoTitles.get(position) : "this video";
+
+        final EditText pinInput = new EditText(this);
+        pinInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pinInput.setHint("PIN");
+        pinInput.setPadding(48, 32, 48, 32);
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+            .setTitle("Delete video?")
+            .setMessage("Hold confirmed. Enter parent PIN to permanently remove:\n" + title)
+            .setView(pinInput)
+            .setCancelable(true)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete", null)
+            .create();
+
+        dialog.setOnShowListener(new android.content.DialogInterface.OnShowListener() {
+            @Override
+            public void onShow(android.content.DialogInterface d) {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        String entered = pinInput.getText() != null ? pinInput.getText().toString().trim() : "";
+                        if (PARENT_DELETE_PIN.equals(entered)) {
+                            dialog.dismiss();
+                            performParentDelete(position);
+                        } else {
+                            Toast.makeText(MainActivity.this, "Wrong PIN", Toast.LENGTH_SHORT).show();
+                            pinInput.setText("");
+                        }
+                    }
+                });
+            }
+        });
+        dialog.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
+            @Override
+            public void onDismiss(android.content.DialogInterface d) {
+                // Allow the next normal tap after dialog closes
+                deleteHoldTriggered = false;
+            }
+        });
+        dialog.show();
+    }
+
+    private void performParentDelete(final int position) {
+        if (position < 0 || position >= videoFiles.size()) return;
+
+        final String path = videoFiles.get(position);
+        final String title = position < videoTitles.size() ? videoTitles.get(position) : "Video";
+        final String filename = new File(path).getName();
+        final boolean wasCurrent = (position == currentIndex);
+
+        Toast.makeText(this, "Deleting...", Toast.LENGTH_SHORT).show();
+
+        thumbExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                File local = new File(path);
+                boolean localOk = !local.exists() || local.delete();
+
+                // Same DELETE path SyncService uses after download (device queue = /videos/<name>)
+                boolean remoteOk = SyncService.deleteRemoteVideo(filename);
+
+                final boolean localDeleted = localOk;
+                final boolean remoteDeleted = remoteOk;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!localDeleted) {
+                            Toast.makeText(MainActivity.this,
+                                "Delete failed (could not remove file)", Toast.LENGTH_LONG).show();
+                            return;
+                        }
+
+                        thumbnailCache.remove(path);
+                        videoFiles.remove(position);
+                        if (position < videoTitles.size()) {
+                            videoTitles.remove(position);
+                        }
+
+                        if (videoFiles.isEmpty()) {
+                            currentIndex = 0;
+                            try { videoView.stopPlayback(); } catch (Exception ignored) {}
+                        } else if (wasCurrent) {
+                            currentIndex = Math.min(position, videoFiles.size() - 1);
+                            playVideo(currentIndex);
+                        } else if (position < currentIndex) {
+                            currentIndex--;
+                        }
+
+                        if (browserVisible && browserGrid != null && browserGrid.getAdapter() != null) {
+                            ((ThumbnailAdapter) browserGrid.getAdapter()).notifyDataSetChanged();
+                        }
+
+                        if (remoteDeleted) {
+                            Toast.makeText(MainActivity.this,
+                                "Deleted: " + title, Toast.LENGTH_LONG).show();
+                        } else {
+                            Toast.makeText(MainActivity.this,
+                                "Deleted locally; server DELETE failed (may reappear on sync)",
+                                Toast.LENGTH_LONG).show();
+                        }
+                    }
+                });
+            }
+        });
     }
 
     private class ThumbnailAdapter extends BaseAdapter {
@@ -377,6 +532,35 @@ public class MainActivity extends Activity {
             String title = position < videoTitles.size() ? videoTitles.get(position) : "Video " + (position + 1);
             label.setText(title);
             cell.setBackgroundColor(position == currentIndex ? Color.argb(100, 100, 100, 255) : Color.argb(60, 255, 255, 255));
+            cell.setTag(position);
+            // Long-press-and-hold ~5s (not a normal click / short long-press) → parent PIN delete
+            cell.setOnTouchListener(new View.OnTouchListener() {
+                @Override
+                public boolean onTouch(View v, MotionEvent event) {
+                    Object tag = v.getTag();
+                    if (!(tag instanceof Integer)) return false;
+                    int pos = (Integer) tag;
+                    switch (event.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            deleteHoldStartX = event.getX();
+                            deleteHoldStartY = event.getY();
+                            startParentDeleteHold(pos);
+                            break;
+                        case MotionEvent.ACTION_MOVE:
+                            float dx = event.getX() - deleteHoldStartX;
+                            float dy = event.getY() - deleteHoldStartY;
+                            if (dx * dx + dy * dy > 40 * 40) {
+                                cancelParentDeleteHold();
+                            }
+                            break;
+                        case MotionEvent.ACTION_UP:
+                        case MotionEvent.ACTION_CANCEL:
+                            cancelParentDeleteHold();
+                            break;
+                    }
+                    return false; // still allow normal tap-to-play
+                }
+            });
 
             if (thumbnailCache.containsKey(path)) {
                 Bitmap bmp = thumbnailCache.get(path);
@@ -704,7 +888,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        cancelParentDeleteHold();
         seekHandler.removeCallbacksAndMessages(null);
+        deleteHoldHandler.removeCallbacksAndMessages(null);
         thumbExecutor.shutdownNow();
     }
 }
