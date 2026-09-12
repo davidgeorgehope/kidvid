@@ -5,3 +5,14 @@ app/obj/
 app/kidvid.apk
 *.apk
 *.apk.idsig
+
+# iOS / Xcode
+ios/**/xcuserdata/
+ios/**/DerivedData/
+ios/**/*.xcuserstate
+ios/android-kidvid-export/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
