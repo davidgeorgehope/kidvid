@@ -4,3 +4,4 @@ app/gen/
 app/obj/
 app/kidvid.apk
 *.apk
+*.apk.idsig

@@ -39,8 +39,9 @@ import javax.net.ssl.HttpsURLConnection;
 /**
  * Background sync service for KidVid.
  * Syncs videos from remote HTTPS server (primary) or local mDNS (fallback):
+ * - Applies pending remote deletes (GET /deletes?device=...) then acks them
  * - Downloads new videos from the server
- * - Sends DELETE after successful download (server-side cleanup)
+ * - Sends DELETE after successful download (server-side queue cleanup)
  * Runs every 15 minutes via AlarmManager (exact + allow-while-idle to survive Doze).
  * Uses a foreground notification + wake lock to ensure downloads complete.
  */
@@ -204,6 +205,9 @@ public class SyncService extends Service {
             return;
         }
 
+        // Server-driven deletes for files already on device (queue may be empty)
+        Set<String> pendingDeletes = applyPendingDeletes(baseUrl, videoDir);
+
         try {
             JSONArray videos = new JSONArray(remoteJson);
             Set<String> serverFiles = new HashSet<>();
@@ -216,8 +220,22 @@ public class SyncService extends Service {
                 long size = v.getLong("size");
                 serverFiles.add(name);
 
+                // Never re-download something marked for remote delete
+                if (pendingDeletes.contains(name)) {
+                    Log.i(TAG, "Skip download (pending delete): " + name);
+                    if (isRemote) {
+                        deleteFromServer(baseUrl + "/videos/" + name);
+                    }
+                    continue;
+                }
+
                 // Build full URL (server returns relative paths)
-                String fullUrl = baseUrl + url;
+                String fullUrl;
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    fullUrl = url;
+                } else {
+                    fullUrl = baseUrl + url;
+                }
 
                 File localFile = new File(videoDir, name);
                 if (localFile.exists() && localFile.length() == size) {
@@ -250,8 +268,100 @@ public class SyncService extends Service {
     }
 
     /**
+     * Fetch pending deletes for this device, remove matching local files, ack the server.
+     * Missing /deletes endpoint (older servers) is a no-op.
+     */
+    private Set<String> applyPendingDeletes(String baseUrl, String primaryVideoDir) {
+        Set<String> pending = new HashSet<>();
+        String device = deviceQueue();
+        String json = httpGet(baseUrl + "/deletes?device=" + device);
+        if (json == null) {
+            Log.d(TAG, "No /deletes endpoint (or empty/unavailable); skipping remote deletes");
+            return pending;
+        }
+
+        try {
+            JSONArray arr = new JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) {
+                String name = arr.optString(i, null);
+                if (name == null || name.isEmpty()) continue;
+                if (name.contains("/") || name.contains("\\") || name.contains("..")) {
+                    Log.w(TAG, "Ignoring unsafe pending delete name: " + name);
+                    continue;
+                }
+                pending.add(name);
+                deleteLocalCopies(name, primaryVideoDir);
+                if (!localCopyExists(name, primaryVideoDir)) {
+                    // Ack only once the file is gone locally so a failed delete retries
+                    deleteFromServerUrl(baseUrl + "/deletes/" + name + "?device=" + device);
+                } else {
+                    Log.w(TAG, "Local delete incomplete for " + name + "; will retry next sync");
+                }
+            }
+        } catch (Exception e) {
+            // Some servers may return {"phone":[...]} without ?device — try that shape
+            try {
+                JSONObject obj = new JSONObject(json);
+                JSONArray arr = obj.optJSONArray(device);
+                if (arr == null) return pending;
+                for (int i = 0; i < arr.length(); i++) {
+                    String name = arr.optString(i, null);
+                    if (name == null || name.isEmpty()) continue;
+                    if (name.contains("/") || name.contains("\\") || name.contains("..")) continue;
+                    pending.add(name);
+                    deleteLocalCopies(name, primaryVideoDir);
+                    if (!localCopyExists(name, primaryVideoDir)) {
+                        deleteFromServerUrl(baseUrl + "/deletes/" + name + "?device=" + device);
+                    }
+                }
+            } catch (Exception e2) {
+                Log.e(TAG, "Failed to parse /deletes", e);
+            }
+        }
+        return pending;
+    }
+
+    /**
+     * Delete filename from the sync dir and other known KidVid video locations.
+     */
+    private boolean deleteLocalCopies(String filename, String primaryVideoDir) {
+        boolean any = false;
+        for (String dir : videoSearchDirs(primaryVideoDir)) {
+            File f = new File(dir, filename);
+            if (f.exists()) {
+                if (f.delete()) {
+                    Log.i(TAG, "Deleted local: " + f.getAbsolutePath());
+                    any = true;
+                } else {
+                    Log.w(TAG, "Failed to delete local: " + f.getAbsolutePath());
+                }
+            }
+        }
+        return any;
+    }
+
+    private boolean localCopyExists(String filename, String primaryVideoDir) {
+        for (String dir : videoSearchDirs(primaryVideoDir)) {
+            if (new File(dir, filename).exists()) return true;
+        }
+        return false;
+    }
+
+    private Set<String> videoSearchDirs(String primaryVideoDir) {
+        Set<String> dirs = new HashSet<>();
+        if (primaryVideoDir != null) dirs.add(primaryVideoDir);
+        for (String p : VIDEO_DIRS) dirs.add(p);
+        File appExt = getExternalFilesDir(null);
+        if (appExt != null) dirs.add(new File(appExt, "videos").getAbsolutePath() + "/");
+        dirs.add(new File(getFilesDir(), "videos").getAbsolutePath() + "/");
+        dirs.add("/sdcard/kidvid/videos/");
+        return dirs;
+    }
+
+    /**
      * Device queue label for ops (Hetzner layout lists phone + fire under /health).
      * Sync/list/DELETE HTTP paths stay /videos/<filename> — same for both devices.
+     * Pending deletes are per-device via ?device=phone|fire.
      */
     public static String deviceQueue() {
         String blob = ((Build.MANUFACTURER == null ? "" : Build.MANUFACTURER) + " "
@@ -265,11 +375,11 @@ public class SyncService extends Service {
 
     /**
      * Parent-delete / CoS helper: DELETE https://files.signal.observer/videos/&lt;filename&gt;
-     * Matches list API naming (GET /videos → name field). Treats 200 and 404 as success
-     * (404 = already removed from the queue, so it will not reappear on next sync).
+     * and tee a pending delete so other devices (and empty queues) still drop the file.
      *
-     * curl example:
+     * curl examples:
      *   curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+     *   curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=phone"
      */
     public static boolean deleteRemoteVideo(String filename) {
         if (filename == null || filename.isEmpty()) return false;
@@ -277,8 +387,42 @@ public class SyncService extends Service {
             Log.w(TAG, "Refusing DELETE with unsafe filename: " + filename);
             return false;
         }
-        String urlStr = REMOTE_SERVER_URL + "/videos/" + filename;
-        return deleteFromServerUrl(urlStr);
+        boolean queueGone = deleteFromServerUrl(REMOTE_SERVER_URL + "/videos/" + filename);
+        // Tee pending delete for both device queues (phone + fire)
+        boolean pendingPhone = queuePendingDelete(REMOTE_SERVER_URL, filename, "phone");
+        boolean pendingFire = queuePendingDelete(REMOTE_SERVER_URL, filename, "fire");
+        return queueGone || pendingPhone || pendingFire;
+    }
+
+    /**
+     * CoS / app: tee a durable pending delete on the server (survives empty /videos queue).
+     */
+    public static boolean queuePendingDelete(String baseUrl, String filename, String device) {
+        if (filename == null || filename.isEmpty()) return false;
+        if (filename.contains("/") || filename.contains("\\") || filename.contains("..")) return false;
+        String d = (device == null || device.isEmpty()) ? "phone" : device;
+        String urlStr = baseUrl + "/deletes/" + filename + "?device=" + d;
+        try {
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(30000);
+            conn.setRequestMethod("PUT");
+            conn.setDoOutput(true);
+            conn.setFixedLengthStreamingMode(0);
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            if (code == 200 || code == 201 || code == 204) {
+                Log.i(TAG, "Queued pending delete (HTTP " + code + "): " + urlStr);
+                return true;
+            }
+            // Older servers without /deletes — not fatal for parent PIN local delete
+            Log.w(TAG, "Pending delete tee returned " + code + " for " + urlStr);
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Pending delete tee failed: " + urlStr, e);
+            return false;
+        }
     }
 
     /**
