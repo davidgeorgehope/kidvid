@@ -14,14 +14,18 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -86,15 +90,26 @@ public class MainActivity extends Activity {
     // Browse button
     private Button browseButton;
 
-    // Parent-gated delete: hold a grid item ~5s, then PIN (kids must not discover casually)
+    // Parent-gated delete: sustained ~5s hold on a thumbnail, then PIN.
+    // Must cancel on finger-up / move / scroll — a brief press must never open PIN.
     private static final long PARENT_DELETE_HOLD_MS = 5000;
+    private static final long PARENT_DELETE_PROGRESS_MS = 1000;
+    private static final long PARENT_DELETE_LOCK_SCROLL_MS = 450;
     private static final String PARENT_DELETE_PIN = "123456";
     private final Handler deleteHoldHandler = new Handler(Looper.getMainLooper());
     private Runnable deleteHoldRunnable;
+    private Runnable deleteHoldProgressRunnable;
+    private Runnable deleteHoldLockScrollRunnable;
     private int deleteHoldPosition = -1;
     private boolean deleteHoldTriggered = false;
-    private float deleteHoldStartX;
-    private float deleteHoldStartY;
+    private boolean deleteHoldActive = false;
+    private View deleteHoldView;
+    private long deleteHoldStartElapsed;
+    private float deleteHoldStartRawX;
+    private float deleteHoldStartRawY;
+    private int deleteHoldSlopSq;
+    private boolean deleteHoldMoved;
+    private Toast deleteHoldProgressToast;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -143,6 +158,9 @@ public class MainActivity extends Activity {
 
         // Start background sync service
         SyncService.schedule(this);
+
+        int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+        deleteHoldSlopSq = (slop * 3) * (slop * 3);
     }
 
     private void enableLockTask() {
@@ -328,6 +346,23 @@ public class MainActivity extends Activity {
                 playVideo(position);
             }
         });
+        // Any scroll must abort a pending parent-delete hold (kids flicking the grid).
+        browserGrid.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(AbsListView view, int scrollState) {
+                if (scrollState != SCROLL_STATE_IDLE) {
+                    cancelParentDeleteHold();
+                }
+            }
+
+            @Override
+            public void onScroll(AbsListView view, int firstVisibleItem, int visibleItemCount, int totalItemCount) {
+                // no-op
+            }
+        });
+        int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+        // Allow a little finger tremor during a deliberate 5s hold; still cancel on real drags.
+        deleteHoldSlopSq = (slop * 3) * (slop * 3);
 
         ((LinearLayout) browserOverlay).addView(browserGrid,
             new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -351,16 +386,64 @@ public class MainActivity extends Activity {
         hideSystemUI();
     }
 
-    // --- Parent-gated delete (5s hold + PIN) ---
+    // --- Parent-gated delete (sustained 5s hold + PIN) ---
 
-    private void startParentDeleteHold(final int position) {
+    private void startParentDeleteHold(final View cell, final int position) {
         cancelParentDeleteHold();
+        deleteHoldActive = true;
+        deleteHoldMoved = false;
         deleteHoldPosition = position;
+        deleteHoldView = cell;
+        deleteHoldStartElapsed = SystemClock.elapsedRealtime();
+
+        deleteHoldProgressRunnable = new Runnable() {
+            @Override
+            public void run() {
+                deleteHoldProgressRunnable = null;
+                if (!deleteHoldActive || deleteHoldPosition != position) return;
+                // Visual + toast so a parent knows the hold is counting; still no PIN yet.
+                if (deleteHoldView != null) {
+                    deleteHoldView.setBackgroundColor(Color.argb(160, 180, 40, 40));
+                }
+                deleteHoldProgressToast = Toast.makeText(MainActivity.this,
+                    "Keep holding\u2026", Toast.LENGTH_SHORT);
+                deleteHoldProgressToast.show();
+            }
+        };
+        deleteHoldHandler.postDelayed(deleteHoldProgressRunnable, PARENT_DELETE_PROGRESS_MS);
+
+        // After a brief stationary press, stop GridView from stealing the gesture for scroll.
+        deleteHoldLockScrollRunnable = new Runnable() {
+            @Override
+            public void run() {
+                deleteHoldLockScrollRunnable = null;
+                if (!deleteHoldActive || deleteHoldView == null) return;
+                ViewParent parent = deleteHoldView.getParent();
+                if (parent != null) {
+                    parent.requestDisallowInterceptTouchEvent(true);
+                }
+            }
+        };
+        deleteHoldHandler.postDelayed(deleteHoldLockScrollRunnable, PARENT_DELETE_LOCK_SCROLL_MS);
+
         deleteHoldRunnable = new Runnable() {
             @Override
             public void run() {
-                deleteHoldTriggered = true;
                 deleteHoldRunnable = null;
+                // deleteHoldActive is cleared on UP/MOVE/CANCEL — never show PIN after release.
+                if (!deleteHoldActive || deleteHoldPosition != position) return;
+                long held = SystemClock.elapsedRealtime() - deleteHoldStartElapsed;
+                if (held < PARENT_DELETE_HOLD_MS - 50) {
+                    cancelParentDeleteHold();
+                    return;
+                }
+                deleteHoldTriggered = true;
+                deleteHoldActive = false;
+                clearParentDeleteHoldCallbacksOnly();
+                restoreDeleteHoldCellBackground();
+                if (deleteHoldView != null) {
+                    deleteHoldView.setPressed(false);
+                }
                 showParentDeletePinDialog(position);
             }
         };
@@ -368,11 +451,54 @@ public class MainActivity extends Activity {
     }
 
     private void cancelParentDeleteHold() {
+        clearParentDeleteHoldCallbacksOnly();
+        if (deleteHoldView != null) {
+            ViewParent parent = deleteHoldView.getParent();
+            if (parent != null) {
+                parent.requestDisallowInterceptTouchEvent(false);
+            }
+            deleteHoldView.setPressed(false);
+        }
+        restoreDeleteHoldCellBackground();
+        deleteHoldActive = false;
+        deleteHoldPosition = -1;
+        deleteHoldView = null;
+        deleteHoldStartElapsed = 0;
+        if (deleteHoldProgressToast != null) {
+            deleteHoldProgressToast.cancel();
+            deleteHoldProgressToast = null;
+        }
+    }
+
+    private void clearParentDeleteHoldCallbacksOnly() {
         if (deleteHoldRunnable != null) {
             deleteHoldHandler.removeCallbacks(deleteHoldRunnable);
             deleteHoldRunnable = null;
         }
-        deleteHoldPosition = -1;
+        if (deleteHoldProgressRunnable != null) {
+            deleteHoldHandler.removeCallbacks(deleteHoldProgressRunnable);
+            deleteHoldProgressRunnable = null;
+        }
+        if (deleteHoldLockScrollRunnable != null) {
+            deleteHoldHandler.removeCallbacks(deleteHoldLockScrollRunnable);
+            deleteHoldLockScrollRunnable = null;
+        }
+    }
+
+    private void restoreDeleteHoldCellBackground() {
+        if (deleteHoldView == null) return;
+        Object tag = deleteHoldView.getTag();
+        if (tag instanceof Integer) {
+            int pos = (Integer) tag;
+            deleteHoldView.setBackgroundColor(
+                pos == currentIndex ? Color.argb(100, 100, 100, 255) : Color.argb(60, 255, 255, 255));
+        }
+    }
+
+    private boolean parentDeleteMoveExceededSlop(MotionEvent event) {
+        float dx = event.getRawX() - deleteHoldStartRawX;
+        float dy = event.getRawY() - deleteHoldStartRawY;
+        return dx * dx + dy * dy > deleteHoldSlopSq;
     }
 
     private void showParentDeletePinDialog(final int position) {
@@ -533,7 +659,8 @@ public class MainActivity extends Activity {
             label.setText(title);
             cell.setBackgroundColor(position == currentIndex ? Color.argb(100, 100, 100, 255) : Color.argb(60, 255, 255, 255));
             cell.setTag(position);
-            // Long-press-and-hold ~5s (not a normal click / short long-press) → parent PIN delete
+            // Sustained hold ~5s → parent PIN delete. Must return true on DOWN so we receive
+            // UP/MOVE/CANCEL and can abort the timer (returning false was the false-positive bug).
             cell.setOnTouchListener(new View.OnTouchListener() {
                 @Override
                 public boolean onTouch(View v, MotionEvent event) {
@@ -542,23 +669,45 @@ public class MainActivity extends Activity {
                     int pos = (Integer) tag;
                     switch (event.getActionMasked()) {
                         case MotionEvent.ACTION_DOWN:
-                            deleteHoldStartX = event.getX();
-                            deleteHoldStartY = event.getY();
-                            startParentDeleteHold(pos);
-                            break;
+                            deleteHoldStartRawX = event.getRawX();
+                            deleteHoldStartRawY = event.getRawY();
+                            v.setPressed(true);
+                            startParentDeleteHold(v, pos);
+                            // Claim the stream so UP/MOVE/CANCEL reach us and cancel the timer.
+                            return true;
                         case MotionEvent.ACTION_MOVE:
-                            float dx = event.getX() - deleteHoldStartX;
-                            float dy = event.getY() - deleteHoldStartY;
-                            if (dx * dx + dy * dy > 40 * 40) {
+                            if (deleteHoldActive && parentDeleteMoveExceededSlop(event)) {
+                                deleteHoldMoved = true;
+                                // Real drag / scroll intent — abort hold and let parent intercept.
+                                ViewParent parent = v.getParent();
+                                if (parent != null) {
+                                    parent.requestDisallowInterceptTouchEvent(false);
+                                }
+                                v.setPressed(false);
                                 cancelParentDeleteHold();
                             }
-                            break;
-                        case MotionEvent.ACTION_UP:
-                        case MotionEvent.ACTION_CANCEL:
+                            return true;
+                        case MotionEvent.ACTION_UP: {
+                            boolean wasTriggered = deleteHoldTriggered;
+                            boolean wasActive = deleteHoldActive;
+                            boolean moved = deleteHoldMoved || parentDeleteMoveExceededSlop(event);
+                            long held = wasActive
+                                ? (SystemClock.elapsedRealtime() - deleteHoldStartElapsed) : 0;
+                            v.setPressed(false);
                             cancelParentDeleteHold();
-                            break;
+                            // Short stationary press → normal tap-to-play (we consumed the stream).
+                            if (!wasTriggered && !moved && wasActive && held < PARENT_DELETE_HOLD_MS
+                                    && browserGrid != null && pos >= 0 && pos < videoFiles.size()) {
+                                browserGrid.performItemClick(v, pos, browserGrid.getItemIdAtPosition(pos));
+                            }
+                            return true;
+                        }
+                        case MotionEvent.ACTION_CANCEL:
+                            v.setPressed(false);
+                            cancelParentDeleteHold();
+                            return true;
                     }
-                    return false; // still allow normal tap-to-play
+                    return true;
                 }
             });
 
