@@ -29,7 +29,7 @@ struct VideoPickerView: View {
             VStack(spacing: 0) {
                 header
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
+                    LazyVGrid(columns: columns, alignment: .center, spacing: 14) {
                         ForEach(library.videos) { item in
                             VideoThumbCell(
                                 item: item,
@@ -51,9 +51,12 @@ struct VideoPickerView: View {
                                     holdProgress = 0
                                 }
                             )
+                            // Isolate layout so LazyVGrid recycling can’t spill neighbors.
+                            .frame(maxWidth: .infinity, alignment: .top)
                         }
                     }
-                    .padding(16)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
                 }
 
                 if let toast {
@@ -153,26 +156,25 @@ private struct VideoThumbCell: View {
 
     @State private var image: UIImage?
 
+    /// Fixed title band so 1- vs 2-line labels don’t shove neighbors / overlap.
+    private let titleBandHeight: CGFloat = 34
+
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             ZStack(alignment: .topTrailing) {
-                Group {
-                    if let image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        Color(white: 0.2)
-                    }
+                Color(white: 0.2)
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                        .clipped()
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 120)
-                .clipped()
-                .overlay {
-                    if holdProgress > 0 {
-                        Rectangle()
-                            .fill(Color.red.opacity(0.35 * holdProgress))
-                    }
+
+                if holdProgress > 0 {
+                    Rectangle()
+                        .fill(Color.red.opacity(0.35 * holdProgress))
+                        .allowsHitTesting(false)
                 }
 
                 if item.isPinned {
@@ -182,23 +184,33 @@ private struct VideoThumbCell: View {
                         .background(Color.black.opacity(0.5))
                         .clipShape(Circle())
                         .padding(6)
+                        .allowsHitTesting(false)
                 }
             }
+            // Stable aspect + clip keeps thumbs inside the cell on SE-width columns.
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             Text(item.title)
                 .font(.caption)
                 .foregroundStyle(.white)
                 .lineLimit(2)
+                .minimumScaleFactor(0.85)
                 .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, minHeight: titleBandHeight, maxHeight: titleBandHeight, alignment: .top)
+                .clipped()
         }
         .padding(8)
+        .frame(maxWidth: .infinity, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(isCurrent
                       ? Color.indigo.opacity(0.35)
                       : Color.white.opacity(0.08))
         )
+        .clipped()
         .contentShape(Rectangle())
         .parentDeleteHold(
             onTap: onTap,

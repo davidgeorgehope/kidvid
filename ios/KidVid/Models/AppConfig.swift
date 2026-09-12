@@ -39,8 +39,17 @@ enum AppConfig {
     /// Hold duration before PIN dialog (same as Android).
     static let parentDeleteHoldSeconds: TimeInterval = 5.0
 
+    /// Still-press delay before a hold commits (lets ScrollView claim flicks).
+    /// Mirrors Android `PARENT_DELETE_LOCK_SCROLL_MS` (~450ms).
+    static let parentDeleteRecognitionDelay: TimeInterval = 0.4
+
+    /// Delay before hold progress UI appears (mirrors Android ~1s toast/red tint).
+    static let parentDeleteProgressRevealDelay: TimeInterval = 1.0
+
     /// Movement threshold (points) that cancels a parent-delete hold.
-    static let parentDeleteCancelDistance: CGFloat = 40
+    /// ~3× default touch slop so intentional holds tolerate tremor, but real
+    /// scroll/drags abort immediately (same idea as Android `slop * 3`).
+    static let parentDeleteCancelDistance: CGFloat = 30
 
     /// Seek amounts for left/right taps (product README spirit).
     static let seekTapSeconds: Double = 5
