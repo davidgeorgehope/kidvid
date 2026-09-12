@@ -266,7 +266,7 @@ extension ParentDeleteHoldRepresentable.HoldView: UIGestureRecognizerDelegate {
         false
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         true
     }
 }
