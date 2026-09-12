@@ -259,16 +259,9 @@ extension ParentDeleteHoldRepresentable.HoldView: UIGestureRecognizerDelegate {
         return true
     }
 
-    func gestureRecognizer(
-        _ gestureRecognizer: UIGestureRecognizer,
-        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
-    ) -> Bool {
-        false
-    }
-
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
-    }
+    // Note: do not implement `gestureRecognizerShouldBegin` here — UIView already
+    // declares it, and Swift requires `override` in the class body (not this
+    // extension). Default `true` is what we want anyway.
 }
 
 extension View {
