@@ -1,0 +1,352 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		095B88E5542341809BE6AE24 /* KidVidApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9682A514DFAA451B89CEB969 /* KidVidApp.swift */; };
+		9B2AC617B244463EB19959CA /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468089F3E0524D4C8E2AFA1E /* RootView.swift */; };
+		29F1A683EEC742CB9E2CDF9C /* VideoItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2073C6BB43F64D888BEB575A /* VideoItem.swift */; };
+		498984CB69984ACE924E52B5 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0C29CBC06940C7A5EA58D9 /* AppConfig.swift */; };
+		55E10CF64BA84574AE057915 /* VideoLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCD765C61266448187F38C3E /* VideoLibrary.swift */; };
+		EC88F30B98E84FD5867BAD5E /* ServerAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12DF0A93327949C4AB857E5B /* ServerAPI.swift */; };
+		5B80DE2DCDC2490BA69BC2F4 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4825C013B9143F58547CF51 /* SyncService.swift */; };
+		E92323BBFC7F4DE587C9AF58 /* ThumbnailGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13AEC2C984CC4574809CA2DA /* ThumbnailGenerator.swift */; };
+		F19B0C4AEAA84EC0AD82B94A /* PlayerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA8069E48F243708446E278 /* PlayerModel.swift */; };
+		2DA2583F5B0A4F69A7E82CF1 /* ParentDeleteHold.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7014EC19F16547BA99B66337 /* ParentDeleteHold.swift */; };
+		CDBB248C3C7E4875B72E5C44 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70D98844E5D4FDAB9244311 /* PlayerView.swift */; };
+		314C6A75414144749615DF3E /* VideoPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECAEDA5ADAD84386804E7F6C /* VideoPickerView.swift */; };
+		814D7CC67C2A4D08BA0C9AAE /* ParentDeletePinView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90D7881260F6449FBAC0A400 /* ParentDeletePinView.swift */; };
+		2C2E7846C1394A7DA0CF20AE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D37F0EF6739C47A9B908D2AA /* Assets.xcassets */; };
+		59A9D165CD3E4B3ABF0A5940 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D04253B7D079418788C4782A /* AVKit.framework */; };
+		75802124F7B148DDBA0F7401 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 05407D34E83144D1B9EF3FDB /* AVFoundation.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		4FC321DE9ECB46BBA31CF47A /* KidVid.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KidVid.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9682A514DFAA451B89CEB969 /* KidVidApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KidVidApp.swift; sourceTree = "<group>"; };
+		468089F3E0524D4C8E2AFA1E /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		2073C6BB43F64D888BEB575A /* VideoItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoItem.swift; sourceTree = "<group>"; };
+		2D0C29CBC06940C7A5EA58D9 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		FCD765C61266448187F38C3E /* VideoLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoLibrary.swift; sourceTree = "<group>"; };
+		12DF0A93327949C4AB857E5B /* ServerAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAPI.swift; sourceTree = "<group>"; };
+		D4825C013B9143F58547CF51 /* SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncService.swift; sourceTree = "<group>"; };
+		13AEC2C984CC4574809CA2DA /* ThumbnailGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailGenerator.swift; sourceTree = "<group>"; };
+		7CA8069E48F243708446E278 /* PlayerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerModel.swift; sourceTree = "<group>"; };
+		7014EC19F16547BA99B66337 /* ParentDeleteHold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParentDeleteHold.swift; sourceTree = "<group>"; };
+		B70D98844E5D4FDAB9244311 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		ECAEDA5ADAD84386804E7F6C /* VideoPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPickerView.swift; sourceTree = "<group>"; };
+		90D7881260F6449FBAC0A400 /* ParentDeletePinView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParentDeletePinView.swift; sourceTree = "<group>"; };
+		D37F0EF6739C47A9B908D2AA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		16C32F6B7EA54D99A390EE58 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		D04253B7D079418788C4782A /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
+		05407D34E83144D1B9EF3FDB /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F952F0B31A344F86AC77468B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				59A9D165CD3E4B3ABF0A5940 /* AVKit.framework in Frameworks */,
+				75802124F7B148DDBA0F7401 /* AVFoundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		DE189FEE0896479FB3ADA2F9 = {
+			isa = PBXGroup;
+			children = (
+				0A11981173FF41BDBE874D89 /* KidVid */,
+				C10B03089B5140D19569F980 /* Products */,
+				2E054AED576748328CAC116C /* Frameworks */,
+			);
+			sourceTree = "<group>";
+		};
+		C10B03089B5140D19569F980 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				4FC321DE9ECB46BBA31CF47A /* KidVid.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		2E054AED576748328CAC116C /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D04253B7D079418788C4782A /* AVKit.framework */,
+				05407D34E83144D1B9EF3FDB /* AVFoundation.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		0A11981173FF41BDBE874D89 /* KidVid */ = {
+			isa = PBXGroup;
+			children = (
+				9682A514DFAA451B89CEB969 /* KidVidApp.swift */,
+				83DE2AE8C58A4418B5EA63C6 /* Models */,
+				29A9E68F75CF44F2B80946F2 /* Services */,
+				D1DD50A0DE2D488085DF88F7 /* Views */,
+				D3908603C0DD410EB2C15E12 /* Utilities */,
+				D37F0EF6739C47A9B908D2AA /* Assets.xcassets */,
+				16C32F6B7EA54D99A390EE58 /* Info.plist */,
+			);
+			path = KidVid;
+			sourceTree = "<group>";
+		};
+		83DE2AE8C58A4418B5EA63C6 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				2073C6BB43F64D888BEB575A /* VideoItem.swift */,
+				2D0C29CBC06940C7A5EA58D9 /* AppConfig.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		29A9E68F75CF44F2B80946F2 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				FCD765C61266448187F38C3E /* VideoLibrary.swift */,
+				12DF0A93327949C4AB857E5B /* ServerAPI.swift */,
+				D4825C013B9143F58547CF51 /* SyncService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		D1DD50A0DE2D488085DF88F7 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				468089F3E0524D4C8E2AFA1E /* RootView.swift */,
+				B70D98844E5D4FDAB9244311 /* PlayerView.swift */,
+				ECAEDA5ADAD84386804E7F6C /* VideoPickerView.swift */,
+				90D7881260F6449FBAC0A400 /* ParentDeletePinView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		D3908603C0DD410EB2C15E12 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				13AEC2C984CC4574809CA2DA /* ThumbnailGenerator.swift */,
+				7CA8069E48F243708446E278 /* PlayerModel.swift */,
+				7014EC19F16547BA99B66337 /* ParentDeleteHold.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8E014FF81B96407BB012F9B7 /* KidVid */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8289BA0D4ACC4797A27ADDC5 /* Build configuration list for PBXNativeTarget "KidVid" */;
+			buildPhases = (
+				6899DB623DD344EBA83E18E4 /* Sources */,
+				F952F0B31A344F86AC77468B /* Frameworks */,
+				93629544FB1A4422AF8A117C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = KidVid;
+			productName = KidVid;
+			productReference = 4FC321DE9ECB46BBA31CF47A /* KidVid.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		457CC9FF0C5C4483837D4812 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					8E014FF81B96407BB012F9B7 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = 47AB0117D79740FCB248CBA9 /* Build configuration list for PBXProject "KidVid" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = DE189FEE0896479FB3ADA2F9;
+			productRefGroup = C10B03089B5140D19569F980 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8E014FF81B96407BB012F9B7 /* KidVid */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		93629544FB1A4422AF8A117C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2C2E7846C1394A7DA0CF20AE /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6899DB623DD344EBA83E18E4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				095B88E5542341809BE6AE24 /* KidVidApp.swift in Sources */,
+				9B2AC617B244463EB19959CA /* RootView.swift in Sources */,
+				29F1A683EEC742CB9E2CDF9C /* VideoItem.swift in Sources */,
+				498984CB69984ACE924E52B5 /* AppConfig.swift in Sources */,
+				55E10CF64BA84574AE057915 /* VideoLibrary.swift in Sources */,
+				EC88F30B98E84FD5867BAD5E /* ServerAPI.swift in Sources */,
+				5B80DE2DCDC2490BA69BC2F4 /* SyncService.swift in Sources */,
+				E92323BBFC7F4DE587C9AF58 /* ThumbnailGenerator.swift in Sources */,
+				F19B0C4AEAA84EC0AD82B94A /* PlayerModel.swift in Sources */,
+				2DA2583F5B0A4F69A7E82CF1 /* ParentDeleteHold.swift in Sources */,
+				CDBB248C3C7E4875B72E5C44 /* PlayerView.swift in Sources */,
+				314C6A75414144749615DF3E /* VideoPickerView.swift in Sources */,
+				814D7CC67C2A4D08BA0C9AAE /* ParentDeletePinView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		EEA16D82B966411BAF400C8F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		B8857E82020246BE8397FC90 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		2DDFCA9D24F94956A11C037F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = KidVid/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = KidVid;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kidvid.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DBADAC988D014824A9CC8582 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = KidVid/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = KidVid;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kidvid.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		47AB0117D79740FCB248CBA9 /* Build configuration list for PBXProject "KidVid" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EEA16D82B966411BAF400C8F /* Debug */,
+				B8857E82020246BE8397FC90 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8289BA0D4ACC4797A27ADDC5 /* Build configuration list for PBXNativeTarget "KidVid" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2DDFCA9D24F94956A11C037F /* Debug */,
+				DBADAC988D014824A9CC8582 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 457CC9FF0C5C4483837D4812 /* Project object */;
+}

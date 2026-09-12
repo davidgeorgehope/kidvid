@@ -2,6 +2,8 @@
 
 A dedicated offline kids video player built from a spare Android phone. YouTube Shorts-style swipe interface, designed for a child with autism who loves replaying segments.
 
+**iOS (first cut):** native SwiftUI app in [`ios/`](ios/) — open `ios/KidVid.xcodeproj` on a Mac. Same sync API as Android (`https://files.signal.observer`). See [ios/README.md](ios/README.md) for Xcode / sideload, Guided Access lockdown, and cloning the Android library onto an iPhone.
+
 ## The Hardware
 
 - **Phone**: Moto G Pure (Android 11, codename "ellis")
@@ -81,6 +83,17 @@ The debug keystore is in `app/debug.keystore`:
 - Keystore password: `android`
 - Key alias: `androiddebugkey`
 - Key password: `android`
+
+## iOS app (SwiftUI)
+
+```bash
+open ios/KidVid.xcodeproj   # macOS + Xcode 15+, iOS 17+
+```
+
+- Sync / parent-delete / picker / player mirror the Android spirit against the same HTTP API.
+- On-device library path: `Documents/kidvid/videos/` (Finder file sharing enabled).
+- Kid lockdown: use **Guided Access** or supervised Single App Mode (see [ios/README.md](ios/README.md)).
+- Next step: run `ios/scripts/clone-from-android.sh` intent flow to seed the iPhone from the Android library.
 
 ## The CLI Tool
 
