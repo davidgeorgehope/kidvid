@@ -3,15 +3,21 @@
 
 Also maintains deletes.json: a durable pending-delete queue so CoS can tee
 remote deletes for files devices already downloaded (empty /videos after drain).
+
+Also serves /nox/home: a tiny LAN-IP locator so Nox Surveillance (Google TV)
+can rediscover the Mac mini after network resets. State is stored in
+$KIDVID_DIR/nox-home.json (same directory as deletes.json).
 """
 
 import http.server
+import ipaddress
 import json
 import os
 import socket
 import socketserver
 import threading
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 PORT = 8643
@@ -19,10 +25,62 @@ VIDEO_DIR = os.environ.get("KIDVID_DIR", os.path.expanduser("~/kidvid-videos"))
 SERVICE_NAME = "_kidvid._tcp"
 KNOWN_DEVICES = ("phone", "fire")
 DELETES_LOCK = threading.Lock()
+NOX_HOME_LOCK = threading.Lock()
+DEFAULT_DASHBOARD_PORT = 8091
+DEFAULT_GO2RTC_RTSP_PORT = 8080
 
 
 def deletes_path():
     return Path(VIDEO_DIR) / "deletes.json"
+
+
+def nox_home_path():
+    """Durable locator file beside videos (same dir as deletes.json)."""
+    return Path(VIDEO_DIR) / "nox-home.json"
+
+
+def load_nox_home():
+    path = nox_home_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not data.get("lan_ip"):
+        return None
+    return data
+
+
+def save_nox_home(data):
+    path = nox_home_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def valid_ipv4(value):
+    """Return True if value is a plausible IPv4 address string (no hostnames)."""
+    if not isinstance(value, str) or not value or "/" in value or "\\" in value:
+        return False
+    try:
+        ipaddress.IPv4Address(value)
+    except (ValueError, ipaddress.AddressValueError):
+        return False
+    return True
+
+
+def parse_port(value, default):
+    if value is None:
+        return default
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    if port < 1 or port > 65535:
+        return None
+    return port
 
 
 def empty_deletes():
@@ -60,7 +118,7 @@ def save_deletes(data):
 
 
 def safe_filename(name):
-    if not name or "/" in name or "\\" in name or ".." in name or name in (".", "deletes.json"):
+    if not name or "/" in name or "\\" in name or ".." in name or name in (".", "deletes.json", "nox-home.json"):
         return None
     return name
 
@@ -81,6 +139,8 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             self._serve_file(filename)
         elif path == "/deletes":
             self._serve_deletes(qs)
+        elif path == "/nox/home":
+            self._serve_nox_home()
         elif path in ("", "/"):
             self._serve_index()
         elif path == "/health":
@@ -93,7 +153,9 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
         qs = urllib.parse.parse_qs(parsed.query)
 
-        if path.startswith("/deletes/"):
+        if path == "/nox/home":
+            self._put_nox_home()
+        elif path.startswith("/deletes/"):
             filename = urllib.parse.unquote(path[len("/deletes/"):])
             self._queue_delete(filename, qs)
         elif path == "/deletes":
@@ -102,7 +164,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(404, "not found")
 
     def do_POST(self):
-        # Same as PUT for CoS convenience: tee a pending delete
+        # Same as PUT: tee pending deletes or publish /nox/home
         self.do_PUT()
 
     def do_DELETE(self):
@@ -131,6 +193,8 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             b"GET /deletes?device=phone|fire - pending remote deletes\n"
             b"PUT|POST /deletes/<name>?device=phone|fire - tee pending delete\n"
             b"DELETE /deletes/<name>?device=phone|fire - clear after device applied\n"
+            b"GET /nox/home - Mac mini LAN IP locator (public)\n"
+            b"PUT|POST /nox/home - publish LAN IP (Bearer NOX_HOME_TOKEN)\n"
         )
 
     def _serve_health(self):
@@ -224,6 +288,59 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
+
+    def _require_nox_home_token(self):
+        """Authorize writes. Missing/empty NOX_HOME_TOKEN => 503 (never open)."""
+        expected = os.environ.get("NOX_HOME_TOKEN") or ""
+        if not expected:
+            self._send_error(503, "NOX_HOME_TOKEN not configured")
+            return False
+        auth = self.headers.get("Authorization") or ""
+        if auth != f"Bearer {expected}":
+            self._send_error(401, "unauthorized")
+            return False
+        return True
+
+    def _serve_nox_home(self):
+        with NOX_HOME_LOCK:
+            data = load_nox_home()
+        if not data:
+            self._send_error(404, "not set")
+            return
+        self._send_json(200, data)
+
+    def _put_nox_home(self):
+        if not self._require_nox_home_token():
+            return
+        body = self._read_json_body()
+        if not isinstance(body, dict):
+            self._send_error(400, "JSON object required")
+            return
+        lan_ip = body.get("lan_ip")
+        if not valid_ipv4(lan_ip):
+            self._send_error(400, "invalid lan_ip")
+            return
+        dashboard_port = parse_port(
+            body.get("dashboard_port"), DEFAULT_DASHBOARD_PORT
+        )
+        if dashboard_port is None:
+            self._send_error(400, "invalid dashboard_port")
+            return
+        go2rtc_rtsp_port = parse_port(
+            body.get("go2rtc_rtsp_port"), DEFAULT_GO2RTC_RTSP_PORT
+        )
+        if go2rtc_rtsp_port is None:
+            self._send_error(400, "invalid go2rtc_rtsp_port")
+            return
+        saved = {
+            "lan_ip": lan_ip,
+            "dashboard_port": dashboard_port,
+            "go2rtc_rtsp_port": go2rtc_rtsp_port,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        with NOX_HOME_LOCK:
+            save_nox_home(saved)
+        self._send_json(200, saved)
 
     def _queue_delete(self, filename, qs):
         filename = safe_filename(urllib.parse.unquote(filename))
@@ -348,6 +465,9 @@ def main():
     print(f"[KidVid] Listening on port {PORT}")
     print(f"[KidVid] Video list: http://localhost:{PORT}/videos")
     print(f"[KidVid] Pending deletes: http://localhost:{PORT}/deletes")
+    print(f"[KidVid] Nox home: http://localhost:{PORT}/nox/home")
+    if not (os.environ.get("NOX_HOME_TOKEN") or ""):
+        print("[KidVid] NOX_HOME_TOKEN unset — PUT/POST /nox/home will return 503")
 
     try:
         server.serve_forever()

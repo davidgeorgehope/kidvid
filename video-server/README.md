@@ -4,6 +4,8 @@ Simple HTTP server that serves `.mp4` files from a directory and advertises itse
 
 Also maintains a durable **`deletes.json`** pending-delete queue so CoS can remove files that devices already downloaded (when `/videos` is empty after drain).
 
+Also exposes **`/nox/home`**: a tiny LAN-IP locator so the Nox Surveillance Google TV app can rediscover the Mac mini after network resets. State is stored in **`$KIDVID_DIR/nox-home.json`** (same directory as `deletes.json`).
+
 ## Endpoints
 
 - `GET /` — server info
@@ -16,6 +18,8 @@ Also maintains a durable **`deletes.json`** pending-delete queue so CoS can remo
 - `PUT|POST /deletes/<filename>?device=phone|fire` — tee a pending delete (omit `device` = both)
 - `PUT|POST /deletes` — body `{"name":"file.mp4","device":"phone"}` or `["a.mp4","b.mp4"]`
 - `DELETE /deletes/<filename>?device=phone|fire` — clear marker after the device applied it
+- `GET /nox/home` — published Mac mini LAN IP (public; `404 {"error":"not set"}` if never published)
+- `PUT|POST /nox/home` — publish LAN IP (requires `Authorization: Bearer <NOX_HOME_TOKEN>`)
 
 ## Remote API (Hetzner / Cloudflare)
 
@@ -44,6 +48,19 @@ curl -X POST https://files.signal.observer/deletes \
 
 # Inspect
 curl -s "https://files.signal.observer/deletes?device=phone"
+
+# --- Nox home IP locator (TV app rediscovers Mac mini after DHCP resets) ---
+# Mac mini publishes periodically:
+curl -X PUT https://files.signal.observer/nox/home \
+  -H "Authorization: Bearer $NOX_HOME_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"lan_ip":"192.168.1.42"}'
+# Optional ports (defaults: dashboard 8091, go2rtc RTSP 8080):
+# -d '{"lan_ip":"192.168.1.42","dashboard_port":8091,"go2rtc_rtsp_port":8080}'
+
+# TV app (or anyone) reads — no auth:
+curl -s https://files.signal.observer/nox/home
+# → {"lan_ip":"...","dashboard_port":8091,"go2rtc_rtsp_port":8080,"updated_at":"..."}
 ```
 
 On the next Android sync, KidVid:
@@ -64,12 +81,14 @@ mkdir -p ~/kidvid-videos
 # Drop some .mp4 files in there
 cp *.mp4 ~/kidvid-videos/
 
-# Run the server
+# Run the server (set NOX_HOME_TOKEN before enabling /nox/home writes)
+export NOX_HOME_TOKEN="replace-me"
 python3 server.py
 ```
 
-Server listens on port **8642** and registers `_kidvid._tcp` via mDNS (macOS `dns-sd`).
+Server listens on port **8643** and registers `_kidvid._tcp` via mDNS (macOS `dns-sd`).
 Pending deletes are stored in `$KIDVID_DIR/deletes.json`.
+Nox home locator state is stored in `$KIDVID_DIR/nox-home.json`.
 
 ## Auto-Start with launchd
 
@@ -91,4 +110,7 @@ Logs: `/tmp/kidvid-server.log`
 
 ## Configuration
 
-Set `KIDVID_DIR` environment variable to change the video directory (default: `~/kidvid-videos`).
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `KIDVID_DIR` | `~/kidvid-videos` | Video directory (`deletes.json` + `nox-home.json` live here) |
+| `NOX_HOME_TOKEN` | *(unset)* | Bearer token required for `PUT\|POST /nox/home`. If unset/empty, writes return **503** (never silently open). `GET /nox/home` stays public. |
