@@ -1,8 +1,8 @@
 import Foundation
 import Combine
 
-/// Background sync: apply pending deletes, download new videos, drain remote queue.
-/// Mirrors Android `SyncService` against `https://files.signal.observer`.
+/// Background sync: apply pending deletes, download new videos, ack per-device.
+/// Shared library stays on the server until 7-day age-out — clients never DELETE after download.
 @MainActor
 final class SyncService: ObservableObject {
     @Published private(set) var isSyncing = false
@@ -39,27 +39,29 @@ final class SyncService: ObservableObject {
         let device = AppConfig.deviceID
         library.ensureDirectories()
 
-        // 1) Apply pending remote deletes
+        // 1) Apply pending remote deletes (this device + legacy phone bucket)
         var pendingNames = Set<String>()
-        do {
-            let pending = try await api.pendingDeletes(device: device)
-            for name in pending where library.isSafeFilename(name) {
-                pendingNames.insert(name)
-                let ok = library.deleteLocal(filename: name)
-                if ok {
-                    _ = await api.ackDelete(filename: name, device: device)
-                } else {
-                    print("[KidVid] Local delete incomplete for \(name); will retry")
+        for bucket in AppConfig.deleteBuckets {
+            do {
+                let pending = try await api.pendingDeletes(device: bucket)
+                for name in pending where library.isSafeFilename(name) {
+                    pendingNames.insert(name)
+                    let ok = library.deleteLocal(filename: name)
+                    if ok {
+                        _ = await api.ackDelete(filename: name, device: bucket)
+                    } else {
+                        print("[KidVid] Local delete incomplete for \(name); will retry")
+                    }
                 }
+            } catch {
+                print("[KidVid] /deletes unavailable for \(bucket): \(error)")
             }
-        } catch {
-            print("[KidVid] /deletes unavailable: \(error)")
         }
 
-        // 2) List + download
+        // 2) List unacked library files for this device + download
         let remote: [RemoteVideo]
         do {
-            remote = try await api.listVideos()
+            remote = try await api.listVideos(device: device)
         } catch {
             lastStatus = "No server (check network)"
             print("[KidVid] listVideos failed: \(error)")
@@ -72,7 +74,6 @@ final class SyncService: ObservableObject {
             guard library.isSafeFilename(v.name) else { continue }
 
             if pendingNames.contains(v.name) {
-                _ = await api.deleteFromQueue(filename: v.name)
                 continue
             }
 
@@ -81,7 +82,8 @@ final class SyncService: ObservableObject {
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path),
                    let size = attrs[.size] as? Int64,
                    size == v.size {
-                    _ = await api.deleteFromQueue(filename: v.name)
+                    // Already on disk — ack so server stops offering; do not DELETE library
+                    _ = await api.ackDownload(filename: v.name, device: device)
                     continue
                 }
             }
@@ -90,7 +92,7 @@ final class SyncService: ObservableObject {
             do {
                 try await api.download(relativeOrAbsolute: v.url, to: dest)
                 downloaded += 1
-                _ = await api.deleteFromQueue(filename: v.name)
+                _ = await api.ackDownload(filename: v.name, device: device)
             } catch {
                 print("[KidVid] Download failed \(v.name): \(error)")
             }
@@ -105,7 +107,7 @@ final class SyncService: ObservableObject {
         _ = manual
     }
 
-    /// Parent PIN delete: local file + remote queue + tee pending for phone+fire.
+    /// Parent PIN delete: local file + remote library DELETE (+ server tees pending deletes).
     func parentDelete(filename: String) async -> (local: Bool, remote: Bool) {
         guard let library else { return (false, false) }
         let local = library.deleteLocal(filename: filename)

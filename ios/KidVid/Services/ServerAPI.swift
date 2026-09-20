@@ -9,12 +9,17 @@ final class ServerAPI: @unchecked Sendable {
         self.baseURL = baseURL
     }
 
-    func listVideos() async throws -> [RemoteVideo] {
-        let data = try await get(path: "/videos")
+    /// Shared library listing. With `device`, only files not yet acked by that install.
+    func listVideos(device: String? = nil) async throws -> [RemoteVideo] {
+        var query: [String: String] = [:]
+        if let device, !device.isEmpty {
+            query["device"] = device
+        }
+        let data = try await get(path: "/videos", query: query)
         return try JSONDecoder().decode([RemoteVideo].self, from: data)
     }
 
-    /// Pending deletes for one device (`GET /deletes?device=phone|fire`).
+    /// Pending deletes for one device (`GET /deletes?device=...`).
     func pendingDeletes(device: String) async throws -> [String] {
         let data = try await get(path: "/deletes", query: ["device": device])
         if let arr = try? JSONDecoder().decode([String].self, from: data) {
@@ -27,8 +32,15 @@ final class ServerAPI: @unchecked Sendable {
         return []
     }
 
+    /// Record that this device has the file. Does **not** remove the shared library copy.
     @discardableResult
-    func deleteFromQueue(filename: String) async -> Bool {
+    func ackDownload(filename: String, device: String) async -> Bool {
+        await put(path: "/acked/\(encoded(filename))", query: ["device": device])
+    }
+
+    /// Parent/CoS: remove from shared library (server also tees pending deletes).
+    @discardableResult
+    func deleteFromLibrary(filename: String) async -> Bool {
         await delete(path: "/videos/\(encoded(filename))")
     }
 
@@ -42,12 +54,12 @@ final class ServerAPI: @unchecked Sendable {
         await delete(path: "/deletes/\(encoded(filename))", query: ["device": device])
     }
 
-    /// Parent delete: queue DELETE + tee both phone and fire (Android parity).
+    /// Parent delete: library DELETE + tee legacy phone/fire buckets.
     func parentDeleteRemote(filename: String) async -> Bool {
-        let queueGone = await deleteFromQueue(filename: filename)
+        let libraryGone = await deleteFromLibrary(filename: filename)
         let phone = await queuePendingDelete(filename: filename, device: "phone")
         let fire = await queuePendingDelete(filename: filename, device: "fire")
-        return queueGone || phone || fire
+        return libraryGone || phone || fire
     }
 
     func download(relativeOrAbsolute urlString: String, to destination: URL) async throws {

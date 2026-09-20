@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""KidVid Video Server — serves videos over HTTP with mDNS discovery.
+"""KidVid Video Server — shared library over HTTP with mDNS discovery.
 
-Also maintains deletes.json: a durable pending-delete queue so CoS can tee
-remote deletes for files devices already downloaded (empty /videos after drain).
+Multi-device model (no delete-on-download):
+  - One shared library of .mp4 files under $KIDVID_DIR (flat).
+  - GET /videos?device=<id> lists only files that device has not yet acked.
+  - PUT /acked/<name>?device=<id> records that a device finished (or already has) a file.
+  - Library files age out after 7 days based on file mtime (see gc_library).
+  - Parent PIN / CoS may DELETE /videos/<name>; pending /deletes still propagates
+    remote deletes to devices that already downloaded a copy.
 
-Also serves /nox/home: a tiny LAN-IP locator so Nox Surveillance (Google TV)
-can rediscover the Mac mini after network resets. State is stored in
-$KIDVID_DIR/nox-home.json (same directory as deletes.json).
+Also serves /nox/home: LAN-IP locator for Nox Surveillance (Google TV).
+State files live beside videos: deletes.json, acks.json, nox-home.json.
 """
 
 import http.server
 import ipaddress
 import json
 import os
-import socket
 import socketserver
 import threading
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,15 +27,27 @@ from pathlib import Path
 PORT = 8643
 VIDEO_DIR = os.environ.get("KIDVID_DIR", os.path.expanduser("~/kidvid-videos"))
 SERVICE_NAME = "_kidvid._tcp"
-KNOWN_DEVICES = ("phone", "fire")
+# Legacy buckets kept so older clients / CoS scripts still tee phone+fire.
+LEGACY_DEVICES = ("phone", "fire")
 DELETES_LOCK = threading.Lock()
+ACKS_LOCK = threading.Lock()
 NOX_HOME_LOCK = threading.Lock()
+GC_LOCK = threading.Lock()
 DEFAULT_DASHBOARD_PORT = 8091
 DEFAULT_GO2RTC_RTSP_PORT = 8080
+# Age-out: remove library .mp4 (and matching .jpg thumb) when mtime is older
+# than this many seconds. Documented in README — uses filesystem mtime, not a sidecar.
+LIBRARY_MAX_AGE_SECONDS = int(os.environ.get("KIDVID_LIBRARY_MAX_AGE_DAYS", "7")) * 24 * 3600
+GC_INTERVAL_SECONDS = int(os.environ.get("KIDVID_GC_INTERVAL_SECONDS", str(3600)))
+PROTECTED_NAMES = frozenset({"deletes.json", "acks.json", "nox-home.json"})
 
 
 def deletes_path():
     return Path(VIDEO_DIR) / "deletes.json"
+
+
+def acks_path():
+    return Path(VIDEO_DIR) / "acks.json"
 
 
 def nox_home_path():
@@ -83,8 +99,12 @@ def parse_port(value, default):
     return port
 
 
-def empty_deletes():
-    return {d: [] for d in KNOWN_DEVICES}
+def empty_deletes(extra_devices=()):
+    out = {d: [] for d in LEGACY_DEVICES}
+    for d in extra_devices:
+        if d and d not in out:
+            out[d] = []
+    return out
 
 
 def load_deletes():
@@ -97,15 +117,17 @@ def load_deletes():
         return empty_deletes()
     out = empty_deletes()
     if isinstance(data, list):
-        # Legacy / flat list applies to every device
-        for d in KNOWN_DEVICES:
+        # Legacy / flat list applies to every known bucket
+        for d in list(out.keys()):
             out[d] = [n for n in data if isinstance(n, str) and n]
         return out
     if isinstance(data, dict):
-        for d in KNOWN_DEVICES:
-            vals = data.get(d, [])
-            if isinstance(vals, list):
-                out[d] = [n for n in vals if isinstance(n, str) and n]
+        for key, vals in data.items():
+            if not isinstance(key, str) or not key:
+                continue
+            if not isinstance(vals, list):
+                continue
+            out[key] = [n for n in vals if isinstance(n, str) and n]
     return out
 
 
@@ -117,10 +139,142 @@ def save_deletes(data):
     tmp.replace(path)
 
 
+def load_acks():
+    """Return {device_id: [filename, ...]}."""
+    path = acks_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for key, vals in data.items():
+        if not isinstance(key, str) or not key:
+            continue
+        if isinstance(vals, list):
+            out[key] = [n for n in vals if isinstance(n, str) and n]
+    return out
+
+
+def save_acks(data):
+    path = acks_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def known_devices():
+    """Union of legacy buckets, delete keys, and ack keys."""
+    devices = set(LEGACY_DEVICES)
+    with DELETES_LOCK:
+        devices.update(load_deletes().keys())
+    with ACKS_LOCK:
+        devices.update(load_acks().keys())
+    return sorted(d for d in devices if d)
+
+
+def safe_device_id(raw):
+    """Allow phone|fire|pixel|iphone-yellow|uuid-ish ids; reject path junk."""
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip().lower()
+    if not raw or len(raw) > 64:
+        return None
+    if "/" in raw or "\\" in raw or ".." in raw or " " in raw:
+        return None
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+    if any(c not in allowed for c in raw):
+        return None
+    return raw
+
+
 def safe_filename(name):
-    if not name or "/" in name or "\\" in name or ".." in name or name in (".", "deletes.json", "nox-home.json"):
+    if not name or "/" in name or "\\" in name or ".." in name or name in (".",) or name in PROTECTED_NAMES:
         return None
     return name
+
+
+def iter_library_mp4s():
+    """Yield Path objects for shared-library .mp4 files (flat $KIDVID_DIR)."""
+    video_dir = Path(VIDEO_DIR)
+    if not video_dir.exists():
+        return
+    for f in sorted(video_dir.iterdir()):
+        if not f.is_file():
+            continue
+        if f.name in PROTECTED_NAMES:
+            continue
+        if f.suffix.lower() == ".mp4":
+            yield f
+
+
+def remove_ack_filename(filename):
+    """Drop a filename from every device's ack list (after library delete/GC)."""
+    with ACKS_LOCK:
+        data = load_acks()
+        changed = False
+        for device, names in list(data.items()):
+            if filename in names:
+                data[device] = [n for n in names if n != filename]
+                changed = True
+        if changed:
+            save_acks(data)
+
+
+def gc_library(now=None):
+    """Age out shared-library media older than LIBRARY_MAX_AGE_SECONDS.
+
+    Age source: filesystem mtime of the .mp4 (when the file was last written /
+    copied into the library). No sidecar. Only deletes:
+      - *.mp4
+      - matching *.jpg thumbnail (same stem), if present
+    Never touches deletes.json / acks.json / nox-home.json.
+    """
+    if now is None:
+        now = time.time()
+    removed = []
+    with GC_LOCK:
+        for mp4 in list(iter_library_mp4s()):
+            try:
+                age = now - mp4.stat().st_mtime
+            except OSError:
+                continue
+            if age < LIBRARY_MAX_AGE_SECONDS:
+                continue
+            name = mp4.name
+            try:
+                mp4.unlink()
+            except OSError as e:
+                print(f"[KidVid] GC: failed to remove {name}: {e}")
+                continue
+            thumb = mp4.with_suffix(".jpg")
+            if thumb.is_file() and thumb.name not in PROTECTED_NAMES:
+                try:
+                    thumb.unlink()
+                except OSError as e:
+                    print(f"[KidVid] GC: failed to remove thumb {thumb.name}: {e}")
+            remove_ack_filename(name)
+            removed.append(name)
+            print(f"[KidVid] GC: aged out {name} (mtime age {int(age / 86400)}d)")
+    return removed
+
+
+def start_gc_thread():
+    def loop():
+        while True:
+            try:
+                gc_library()
+            except Exception as e:
+                print(f"[KidVid] GC loop error: {e}")
+            time.sleep(max(60, GC_INTERVAL_SECONDS))
+
+    t = threading.Thread(target=loop, name="kidvid-gc", daemon=True)
+    t.start()
+    return t
 
 
 class KidVidHandler(http.server.BaseHTTPRequestHandler):
@@ -133,12 +287,14 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query)
 
         if path == "/videos":
-            self._serve_video_list()
+            self._serve_video_list(qs)
         elif path.startswith("/videos/"):
             filename = urllib.parse.unquote(path[len("/videos/"):])
             self._serve_file(filename)
         elif path == "/deletes":
             self._serve_deletes(qs)
+        elif path == "/acked":
+            self._serve_acks(qs)
         elif path == "/nox/home":
             self._serve_nox_home()
         elif path in ("", "/"):
@@ -155,6 +311,11 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/nox/home":
             self._put_nox_home()
+        elif path.startswith("/acked/"):
+            filename = urllib.parse.unquote(path[len("/acked/"):])
+            self._ack_download(filename, qs)
+        elif path == "/acked" or path == "/receipts":
+            self._ack_download_from_body(qs)
         elif path.startswith("/deletes/"):
             filename = urllib.parse.unquote(path[len("/deletes/"):])
             self._queue_delete(filename, qs)
@@ -164,7 +325,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(404, "not found")
 
     def do_POST(self):
-        # Same as PUT: tee pending deletes or publish /nox/home
+        # Same as PUT: tee pending deletes, acks, or publish /nox/home
         self.do_PUT()
 
     def do_DELETE(self):
@@ -174,7 +335,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
 
         if path.startswith("/videos/"):
             filename = urllib.parse.unquote(path[len("/videos/"):])
-            self._delete_file(filename)
+            self._delete_file(filename, qs)
         elif path.startswith("/deletes/"):
             filename = urllib.parse.unquote(path[len("/deletes/"):])
             self._ack_delete(filename, qs)
@@ -186,33 +347,66 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(
-            b"KidVid Video Server\n\n"
-            b"GET /videos - list videos\n"
+            b"KidVid Video Server (shared library)\n\n"
+            b"GET /videos - list shared library (all .mp4)\n"
+            b"GET /videos?device=<id> - list files not yet acked by that device\n"
             b"GET /videos/<name> - download video\n"
-            b"DELETE /videos/<name> - remove from download queue\n"
-            b"GET /deletes?device=phone|fire - pending remote deletes\n"
-            b"PUT|POST /deletes/<name>?device=phone|fire - tee pending delete\n"
-            b"DELETE /deletes/<name>?device=phone|fire - clear after device applied\n"
+            b"DELETE /videos/<name> - parent/CoS remove from library (+ tee pending deletes)\n"
+            b"PUT|POST /acked/<name>?device=<id> - mark downloaded for device\n"
+            b"GET /acked?device=<id> - list acked filenames for device\n"
+            b"GET /deletes?device=<id> - pending remote deletes\n"
+            b"PUT|POST /deletes/<name>?device=<id> - tee pending delete\n"
+            b"DELETE /deletes/<name>?device=<id> - clear after device applied\n"
             b"GET /nox/home - Mac mini LAN IP locator (public)\n"
             b"PUT|POST /nox/home - publish LAN IP (Bearer NOX_HOME_TOKEN)\n"
+            b"\nLibrary GC: .mp4 (+ matching .jpg) older than 7 days by mtime.\n"
         )
 
     def _serve_health(self):
-        self._send_json(200, {"status": "ok", "devices": list(KNOWN_DEVICES)})
+        self._send_json(200, {
+            "status": "ok",
+            "mode": "shared-library",
+            "library_max_age_days": LIBRARY_MAX_AGE_SECONDS // 86400,
+            "devices": known_devices(),
+        })
 
-    def _serve_video_list(self):
+    def _serve_video_list(self, qs):
+        device_raw = (qs.get("device") or [None])[0]
+        device = None
+        if device_raw:
+            device = safe_device_id(device_raw)
+            if device is None:
+                self._send_error(400, "invalid device")
+                return
+
+        acked = set()
+        if device:
+            with ACKS_LOCK:
+                acked = set(load_acks().get(device, []))
+
         videos = []
-        video_dir = Path(VIDEO_DIR)
-        if video_dir.exists():
-            for f in sorted(video_dir.iterdir()):
-                if f.suffix.lower() == ".mp4" and f.is_file():
-                    host = self.headers.get("Host", f"localhost:{PORT}")
-                    videos.append({
-                        "name": f.name,
-                        "size": f.stat().st_size,
-                        "url": f"/videos/{urllib.parse.quote(f.name)}"
-                    })
+        for f in iter_library_mp4s():
+            if device and f.name in acked:
+                continue
+            videos.append({
+                "name": f.name,
+                "size": f.stat().st_size,
+                "url": f"/videos/{urllib.parse.quote(f.name)}",
+            })
         self._send_json(200, videos)
+
+    def _serve_acks(self, qs):
+        device_raw = (qs.get("device") or [None])[0]
+        if not device_raw:
+            with ACKS_LOCK:
+                self._send_json(200, load_acks())
+            return
+        device = safe_device_id(device_raw)
+        if device is None:
+            self._send_error(400, "invalid device")
+            return
+        with ACKS_LOCK:
+            self._send_json(200, load_acks().get(device, []))
 
     def _serve_file(self, filename):
         filename = safe_filename(filename)
@@ -239,33 +433,51 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
-    def _delete_file(self, filename):
+    def _delete_file(self, filename, qs):
+        """Parent/CoS library delete. Does not run on normal client sync."""
         filename = safe_filename(filename)
         if not filename:
             self._send_error(400, "invalid name")
             return
 
         filepath = Path(VIDEO_DIR) / filename
-        if not filepath.exists() or not filepath.is_file():
-            self._send_error(404, "not found")
+        if filepath.exists() and filepath.is_file():
+            try:
+                filepath.unlink()
+            except OSError as e:
+                self._send_error(500, str(e))
+                return
+            thumb = filepath.with_suffix(".jpg")
+            if thumb.is_file():
+                try:
+                    thumb.unlink()
+                except OSError:
+                    pass
+        # Always clear acks for this name; tee pending deletes so devices drop local copies.
+        remove_ack_filename(filename)
+        devices = self._devices_from_qs(qs, default_all=True)
+        if devices is None:
+            self._send_error(400, "invalid device")
             return
+        with DELETES_LOCK:
+            data = load_deletes()
+            for d in devices:
+                if d not in data:
+                    data[d] = []
+                if filename not in data[d]:
+                    data[d].append(filename)
+            save_deletes(data)
 
-        try:
-            filepath.unlink()
-        except OSError as e:
-            self._send_error(500, str(e))
-            return
-
-        self._send_json(200, {"deleted": filename})
+        self._send_json(200, {"deleted": filename, "pending_devices": devices})
 
     def _devices_from_qs(self, qs, default_all=True):
         raw = (qs.get("device") or [None])[0]
         if not raw:
-            return list(KNOWN_DEVICES) if default_all else None
-        raw = raw.strip().lower()
-        if raw not in KNOWN_DEVICES:
+            return known_devices() if default_all else None
+        device = safe_device_id(raw)
+        if device is None:
             return None
-        return [raw]
+        return [device]
 
     def _serve_deletes(self, qs):
         devices = self._devices_from_qs(qs, default_all=True)
@@ -277,7 +489,9 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         if len(devices) == 1:
             self._send_json(200, data.get(devices[0], []))
         else:
-            self._send_json(200, data)
+            # Include empty buckets for requested/known devices
+            out = {d: data.get(d, []) for d in devices}
+            self._send_json(200, out)
 
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -342,6 +556,43 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             save_nox_home(saved)
         self._send_json(200, saved)
 
+    def _ack_download(self, filename, qs):
+        filename = safe_filename(urllib.parse.unquote(filename))
+        if not filename:
+            self._send_error(400, "invalid name")
+            return
+        devices = self._devices_from_qs(qs, default_all=False)
+        if not devices:
+            self._send_error(400, "device required")
+            return
+        device = devices[0]
+        with ACKS_LOCK:
+            data = load_acks()
+            names = data.get(device, [])
+            if filename not in names:
+                names.append(filename)
+            data[device] = names
+            save_acks(data)
+        self._send_json(200, {"acked": filename, "device": device})
+
+    def _ack_download_from_body(self, qs):
+        body = self._read_json_body()
+        name = None
+        device = (qs.get("device") or [None])[0]
+        if isinstance(body, dict):
+            name = body.get("name") or body.get("filename")
+            if body.get("device"):
+                device = body.get("device")
+        elif isinstance(body, str):
+            name = body
+        if not name:
+            self._send_error(400, "name required")
+            return
+        q = {}
+        if device:
+            q["device"] = [str(device)]
+        self._ack_download(str(name), q)
+
     def _queue_delete(self, filename, qs):
         filename = safe_filename(urllib.parse.unquote(filename))
         if not filename:
@@ -354,6 +605,8 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         with DELETES_LOCK:
             data = load_deletes()
             for d in devices:
+                if d not in data:
+                    data[d] = []
                 if filename not in data[d]:
                     data[d].append(filename)
             save_deletes(data)
@@ -387,6 +640,8 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
                     if not fn:
                         continue
                     for d in devices:
+                        if d not in data:
+                            data[d] = []
                         if fn not in data[d]:
                             data[d].append(fn)
                     queued.append(fn)
@@ -414,7 +669,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         with DELETES_LOCK:
             data = load_deletes()
             for d in devices:
-                if filename in data[d]:
+                if filename in data.get(d, []):
                     data[d] = [n for n in data[d] if n != filename]
             save_deletes(data)
         self._send_json(200, {"cleared": filename, "devices": devices})
@@ -458,14 +713,22 @@ def register_mdns():
 def main():
     os.makedirs(VIDEO_DIR, exist_ok=True)
 
+    # Startup GC + periodic age-out (7-day mtime)
+    removed = gc_library()
+    if removed:
+        print(f"[KidVid] Startup GC removed {len(removed)} aged file(s)")
+    start_gc_thread()
+
     mdns_proc = register_mdns()
 
     server = ThreadedHTTPServer(("0.0.0.0", PORT), KidVidHandler)
-    print(f"[KidVid] Serving videos from: {VIDEO_DIR}")
+    print(f"[KidVid] Shared library from: {VIDEO_DIR}")
     print(f"[KidVid] Listening on port {PORT}")
-    print(f"[KidVid] Video list: http://localhost:{PORT}/videos")
+    print(f"[KidVid] Video list: http://localhost:{PORT}/videos?device=<id>")
+    print(f"[KidVid] Acks: http://localhost:{PORT}/acked")
     print(f"[KidVid] Pending deletes: http://localhost:{PORT}/deletes")
     print(f"[KidVid] Nox home: http://localhost:{PORT}/nox/home")
+    print(f"[KidVid] Library GC: mtime older than {LIBRARY_MAX_AGE_SECONDS // 86400} days")
     if not (os.environ.get("NOX_HOME_TOKEN") or ""):
         print("[KidVid] NOX_HOME_TOKEN unset — PUT/POST /nox/home will return 503")
 
