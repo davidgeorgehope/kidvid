@@ -16,6 +16,8 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 
+import android.content.SharedPreferences;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -29,19 +31,18 @@ import java.net.InetAddress;
 import java.net.URL;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import javax.net.ssl.HttpsURLConnection;
-
 /**
  * Background sync service for KidVid.
  * Syncs videos from remote HTTPS server (primary) or local mDNS (fallback):
  * - Applies pending remote deletes (GET /deletes?device=...) then acks them
- * - Downloads new videos from the server
- * - Sends DELETE after successful download (server-side queue cleanup)
+ * - Lists shared library via GET /videos?device=<id> (only unacked files)
+ * - Downloads missing videos; PUT /acked/<name>?device=<id> (never DELETE library)
  * Runs every 15 minutes via AlarmManager (exact + allow-while-idle to survive Doze).
  * Uses a foreground notification + wake lock to ensure downloads complete.
  */
@@ -50,6 +51,8 @@ public class SyncService extends Service {
     private static final String SERVICE_TYPE = "_kidvid._tcp.";
     private static final long SYNC_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
     private static final String CHANNEL_ID = "kidvid_sync";
+    private static final String PREFS_NAME = "kidvid";
+    private static final String PREF_DEVICE_ID = "device_id";
 
     // Remote HTTPS server (Cloudflare tunnel to Hetzner)
     private static final String REMOTE_SERVER_URL = "https://files.signal.observer";
@@ -180,15 +183,19 @@ public class SyncService extends Service {
         }
         Log.i(TAG, "Using video dir: " + videoDir);
 
-        // Try remote HTTPS server first
+        String device = deviceId(this);
+        Log.i(TAG, "Device id: " + device);
+
+        // Try remote HTTPS server first (health/list probe)
         String baseUrl = null;
-        boolean isRemote = false;
 
         Log.i(TAG, "Trying remote server: " + REMOTE_SERVER_URL);
-        String remoteJson = httpGet(REMOTE_SERVER_URL + "/videos");
-        if (remoteJson != null) {
+        String probe = httpGet(REMOTE_SERVER_URL + "/health");
+        if (probe == null) {
+            probe = httpGet(REMOTE_SERVER_URL + "/videos?device=" + device);
+        }
+        if (probe != null) {
             baseUrl = REMOTE_SERVER_URL;
-            isRemote = true;
             Log.i(TAG, "Connected to remote server");
         } else {
             // Fall back to mDNS discovery
@@ -196,36 +203,37 @@ public class SyncService extends Service {
             if (discoverServer()) {
                 baseUrl = "http://" + serverHost + ":" + serverPort;
                 Log.i(TAG, "Found local server at " + baseUrl);
-                remoteJson = httpGet(baseUrl + "/videos");
             }
         }
 
-        if (baseUrl == null || remoteJson == null) {
+        if (baseUrl == null) {
             Log.w(TAG, "No server available (remote or local), skipping sync");
             return;
         }
 
-        // Server-driven deletes for files already on device (queue may be empty)
+        // Server-driven deletes for files already on device
         Set<String> pendingDeletes = applyPendingDeletes(baseUrl, videoDir);
+
+        // Shared library list filtered by this device's acks
+        String remoteJson = httpGet(baseUrl + "/videos?device=" + device);
+        if (remoteJson == null) {
+            Log.w(TAG, "Failed to list /videos?device=" + device);
+            return;
+        }
 
         try {
             JSONArray videos = new JSONArray(remoteJson);
-            Set<String> serverFiles = new HashSet<>();
 
-            // Download new videos
+            // Download new videos; ack (do not DELETE) so other devices still see them
             for (int i = 0; i < videos.length(); i++) {
                 JSONObject v = videos.getJSONObject(i);
                 String name = v.getString("name");
                 String url = v.getString("url");
                 long size = v.getLong("size");
-                serverFiles.add(name);
 
                 // Never re-download something marked for remote delete
                 if (pendingDeletes.contains(name)) {
                     Log.i(TAG, "Skip download (pending delete): " + name);
-                    if (isRemote) {
-                        deleteFromServer(baseUrl + "/videos/" + name);
-                    }
                     continue;
                 }
 
@@ -240,19 +248,16 @@ public class SyncService extends Service {
                 File localFile = new File(videoDir, name);
                 if (localFile.exists() && localFile.length() == size) {
                     Log.d(TAG, "Already have: " + name);
-                    // If remote, delete from server since we already have it
-                    if (isRemote) {
-                        deleteFromServer(baseUrl + "/videos/" + name);
-                    }
+                    ackDownload(baseUrl, name, device);
                     continue;
                 }
 
                 Log.i(TAG, "Downloading: " + name + " (" + (size / 1024 / 1024) + " MB)");
                 boolean downloaded = downloadFile(fullUrl, localFile);
 
-                // After successful download from remote, delete from server
-                if (downloaded && isRemote) {
-                    deleteFromServer(baseUrl + "/videos/" + name);
+                // After successful download, ack — library stays until 7-day age-out
+                if (downloaded) {
+                    ackDownload(baseUrl, name, device);
                 }
             }
 
@@ -268,17 +273,30 @@ public class SyncService extends Service {
     }
 
     /**
-     * Fetch pending deletes for this device, remove matching local files, ack the server.
+     * Fetch pending deletes for this device (and legacy phone/fire buckets),
+     * remove matching local files, ack the server.
      * Missing /deletes endpoint (older servers) is a no-op.
      */
     private Set<String> applyPendingDeletes(String baseUrl, String primaryVideoDir) {
         Set<String> pending = new HashSet<>();
-        String device = deviceQueue();
-        String json = httpGet(baseUrl + "/deletes?device=" + device);
-        if (json == null) {
-            Log.d(TAG, "No /deletes endpoint (or empty/unavailable); skipping remote deletes");
-            return pending;
+        Set<String> buckets = new HashSet<>();
+        buckets.add(deviceId(this));
+        String legacy = legacyDeleteBucket();
+        if (legacy != null) buckets.add(legacy);
+        // Always check legacy phone/fire so CoS scripts that tee those still work
+        buckets.add("phone");
+        buckets.add("fire");
+
+        for (String device : buckets) {
+            applyPendingDeletesForDevice(baseUrl, primaryVideoDir, device, pending);
         }
+        return pending;
+    }
+
+    private void applyPendingDeletesForDevice(
+            String baseUrl, String primaryVideoDir, String device, Set<String> pending) {
+        String json = httpGet(baseUrl + "/deletes?device=" + device);
+        if (json == null) return;
 
         try {
             JSONArray arr = new JSONArray(json);
@@ -292,18 +310,16 @@ public class SyncService extends Service {
                 pending.add(name);
                 deleteLocalCopies(name, primaryVideoDir);
                 if (!localCopyExists(name, primaryVideoDir)) {
-                    // Ack only once the file is gone locally so a failed delete retries
                     deleteFromServerUrl(baseUrl + "/deletes/" + name + "?device=" + device);
                 } else {
                     Log.w(TAG, "Local delete incomplete for " + name + "; will retry next sync");
                 }
             }
         } catch (Exception e) {
-            // Some servers may return {"phone":[...]} without ?device — try that shape
             try {
                 JSONObject obj = new JSONObject(json);
                 JSONArray arr = obj.optJSONArray(device);
-                if (arr == null) return pending;
+                if (arr == null) return;
                 for (int i = 0; i < arr.length(); i++) {
                     String name = arr.optString(i, null);
                     if (name == null || name.isEmpty()) continue;
@@ -315,10 +331,20 @@ public class SyncService extends Service {
                     }
                 }
             } catch (Exception e2) {
-                Log.e(TAG, "Failed to parse /deletes", e);
+                Log.e(TAG, "Failed to parse /deletes for " + device, e);
             }
         }
-        return pending;
+    }
+
+    /** Legacy delete bucket hint (phone vs fire) for CoS scripts that still tee those labels. */
+    private static String legacyDeleteBucket() {
+        String blob = ((Build.MANUFACTURER == null ? "" : Build.MANUFACTURER) + " "
+                + (Build.MODEL == null ? "" : Build.MODEL) + " "
+                + (Build.PRODUCT == null ? "" : Build.PRODUCT)).toLowerCase();
+        if (blob.contains("amazon") || blob.contains("kf") || blob.contains("fire")) {
+            return "fire";
+        }
+        return "phone";
     }
 
     /**
@@ -359,27 +385,49 @@ public class SyncService extends Service {
     }
 
     /**
-     * Device queue label for ops (Hetzner layout lists phone + fire under /health).
-     * Sync/list/DELETE HTTP paths stay /videos/<filename> — same for both devices.
-     * Pending deletes are per-device via ?device=phone|fire.
+     * Stable per-install device id for /videos?device= and /acked.
+     * Prefer a friendly override in SharedPreferences ("pixel", "iphone-yellow");
+     * otherwise generate once (fire → "fire-&lt;short&gt;", else "android-&lt;short&gt;").
+     * Also used for pending /deletes?device=.
      */
+    public static String deviceId(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String existing = prefs.getString(PREF_DEVICE_ID, null);
+        if (existing != null && !existing.trim().isEmpty()) {
+            return existing.trim().toLowerCase();
+        }
+        String generated = suggestDeviceId();
+        prefs.edit().putString(PREF_DEVICE_ID, generated).apply();
+        return generated;
+    }
+
+    /** @deprecated Use {@link #deviceId(Context)}. */
     public static String deviceQueue() {
+        return legacyDeleteBucket();
+    }
+
+    private static String suggestDeviceId() {
         String blob = ((Build.MANUFACTURER == null ? "" : Build.MANUFACTURER) + " "
                 + (Build.MODEL == null ? "" : Build.MODEL) + " "
                 + (Build.PRODUCT == null ? "" : Build.PRODUCT)).toLowerCase();
+        String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         if (blob.contains("amazon") || blob.contains("kf") || blob.contains("fire")) {
-            return "fire";
+            return "fire-" + suffix;
         }
-        return "phone";
+        if (blob.contains("pixel")) {
+            return "pixel-" + suffix;
+        }
+        return "android-" + suffix;
     }
 
     /**
-     * Parent-delete / CoS helper: DELETE https://files.signal.observer/videos/&lt;filename&gt;
-     * and tee a pending delete so other devices (and empty queues) still drop the file.
+     * Parent-delete / CoS helper: DELETE library file on the server.
+     * Server also tees pending deletes for all known devices; we still tee
+     * legacy phone+fire for older servers / CoS scripts.
      *
      * curl examples:
      *   curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
-     *   curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=phone"
+     *   curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4"
      */
     public static boolean deleteRemoteVideo(String filename) {
         if (filename == null || filename.isEmpty()) return false;
@@ -387,15 +435,47 @@ public class SyncService extends Service {
             Log.w(TAG, "Refusing DELETE with unsafe filename: " + filename);
             return false;
         }
-        boolean queueGone = deleteFromServerUrl(REMOTE_SERVER_URL + "/videos/" + filename);
-        // Tee pending delete for both device queues (phone + fire)
+        // DELETE removes from shared library; server tees pending deletes to known devices
+        boolean libraryGone = deleteFromServerUrl(REMOTE_SERVER_URL + "/videos/" + filename);
+        // Extra tee for legacy buckets (no-op if server already covered them)
         boolean pendingPhone = queuePendingDelete(REMOTE_SERVER_URL, filename, "phone");
         boolean pendingFire = queuePendingDelete(REMOTE_SERVER_URL, filename, "fire");
-        return queueGone || pendingPhone || pendingFire;
+        return libraryGone || pendingPhone || pendingFire;
     }
 
     /**
-     * CoS / app: tee a durable pending delete on the server (survives empty /videos queue).
+     * Record that this device has the file (download or size-match).
+     * Does NOT delete the shared library copy.
+     */
+    private static boolean ackDownload(String baseUrl, String filename, String device) {
+        if (filename == null || filename.isEmpty()) return false;
+        if (filename.contains("/") || filename.contains("\\") || filename.contains("..")) return false;
+        String d = (device == null || device.isEmpty()) ? "android" : device;
+        String urlStr = baseUrl + "/acked/" + filename + "?device=" + d;
+        try {
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(30000);
+            conn.setRequestMethod("PUT");
+            conn.setDoOutput(true);
+            conn.setFixedLengthStreamingMode(0);
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            if (code == 200 || code == 201 || code == 204) {
+                Log.i(TAG, "Acked download (HTTP " + code + "): " + urlStr);
+                return true;
+            }
+            Log.w(TAG, "Ack returned " + code + " for " + urlStr);
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Ack failed: " + urlStr, e);
+            return false;
+        }
+    }
+
+    /**
+     * CoS / app: tee a durable pending delete on the server.
      */
     public static boolean queuePendingDelete(String baseUrl, String filename, String device) {
         if (filename == null || filename.isEmpty()) return false;
@@ -423,14 +503,6 @@ public class SyncService extends Service {
             Log.e(TAG, "Pending delete tee failed: " + urlStr, e);
             return false;
         }
-    }
-
-    /**
-     * Send DELETE request to remove a video from the remote server.
-     * Returns true on HTTP 200 or 404 (already gone).
-     */
-    private void deleteFromServer(String urlStr) {
-        deleteFromServerUrl(urlStr);
     }
 
     private static boolean deleteFromServerUrl(String urlStr) {

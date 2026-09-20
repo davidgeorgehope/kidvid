@@ -5,19 +5,29 @@ enum AppConfig {
     /// Production video server (same host as Android).
     static let defaultServerURL = URL(string: "https://files.signal.observer")!
 
-    /// Device queue label for pending deletes (`phone` | `fire`).
-    /// iPhone defaults to `phone`; override via UserDefaults key `kidvid.device`.
+    private static let deviceIDKey = "kidvid.device"
+
+    /// Stable per-install device id for `/videos?device=` and `/acked`.
+    /// Override via UserDefaults (`kidvid.device`) e.g. `iphone-yellow`.
+    /// If unset, generates and persists `iphone-<8 hex>` once.
     static var deviceID: String {
         get {
-            let raw = UserDefaults.standard.string(forKey: "kidvid.device")?
+            let raw = UserDefaults.standard.string(forKey: deviceIDKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
             if let raw, !raw.isEmpty { return raw }
-            return "phone"
+            let generated = "iphone-" + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8))
+            UserDefaults.standard.set(generated, forKey: deviceIDKey)
+            return generated
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: "kidvid.device")
+            UserDefaults.standard.set(newValue, forKey: deviceIDKey)
         }
+    }
+
+    /// Buckets checked for pending remote deletes (this install + legacy CoS `phone`).
+    static var deleteBuckets: [String] {
+        Array(Set([deviceID, "phone"]))
     }
 
     static var serverBaseURL: URL {

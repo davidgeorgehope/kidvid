@@ -6,6 +6,10 @@ app/kidvid.apk
 *.apk
 *.apk.idsig
 
+# Python
+__pycache__/
+*.py[cod]
+
 # iOS / Xcode
 ios/**/xcuserdata/
 ios/**/DerivedData/

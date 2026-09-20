@@ -1,23 +1,38 @@
 # KidVid Video Server
 
-Simple HTTP server that serves `.mp4` files from a directory and advertises itself via mDNS as `_kidvid._tcp`.
+Simple HTTP server that serves a **shared library** of `.mp4` files and advertises itself via mDNS as `_kidvid._tcp`.
 
-Also maintains a durable **`deletes.json`** pending-delete queue so CoS can remove files that devices already downloaded (when `/videos` is empty after drain).
+## Multi-device model
 
-Also exposes **`/nox/home`**: a tiny LAN-IP locator so the Nox Surveillance Google TV app can rediscover the Mac mini after network resets. State is stored in **`$KIDVID_DIR/nox-home.json`** (same directory as `deletes.json`).
+Previously each client `DELETE`d a file after download, so the first device to sync starved the rest. Now:
+
+1. **One shared library** — drop `.mp4` files into `$KIDVID_DIR` (flat). Prefer a single library push; do not use per-device `phone/` / `fire/` / `pixel/` / `iphone/` subdirs going forward.
+2. **Per-device acks** — after a successful download (or local size-match), clients `PUT /acked/<name>?device=<id>`. The library file stays on disk.
+3. **Filtered listing** — `GET /videos?device=<id>` returns only files that device has **not** yet acked (so Pixel + multiple iPhones each get a turn).
+4. **7-day age-out** — a GC loop removes `.mp4` (and matching `.jpg` thumbs) whose **filesystem mtime** is older than 7 days. No sidecar `added_at`. Never deletes `deletes.json`, `acks.json`, or `nox-home.json`.
+5. **Parent / CoS delete** — `DELETE /videos/<name>` removes from the library and tees pending deletes for known devices. Clients must **not** DELETE after normal sync.
+
+Pending **`/deletes`** remains for parent-driven remote delete propagation across devices.
+
+Also exposes **`/nox/home`**: a tiny LAN-IP locator so the Nox Surveillance Google TV app can rediscover the Mac mini after network resets. State is stored in **`$KIDVID_DIR/nox-home.json`**.
 
 ## Endpoints
 
 - `GET /` — server info
-- `GET /health` — `{"status":"ok","devices":["phone","fire"]}`
-- `GET /videos` — JSON list of all `.mp4` files (name, size, URL)
+- `GET /health` — `{"status":"ok","mode":"shared-library","library_max_age_days":7,"devices":[...]}`
+- `GET /videos` — JSON list of all library `.mp4` files (name, size, URL)
+- `GET /videos?device=<id>` — library files **not yet acked** by that device
 - `GET /videos/<filename>` — download a video file
-- `DELETE /videos/<filename>` — remove from the download queue
-- `GET /deletes` — pending deletes for all devices (`{"phone":[...],"fire":[...]}`)
-- `GET /deletes?device=phone|fire` — pending deletes for one device (JSON array)
-- `PUT|POST /deletes/<filename>?device=phone|fire` — tee a pending delete (omit `device` = both)
+- `DELETE /videos/<filename>` — parent/CoS remove from library (+ tee pending deletes for known devices)
+- `PUT|POST /acked/<filename>?device=<id>` — mark downloaded for device (required `device`)
+- `PUT|POST /acked` or `/receipts` — body `{"name":"file.mp4","device":"pixel-…"}`
+- `GET /acked` — all acks `{device:[filenames…]}`
+- `GET /acked?device=<id>` — acked filenames for one device
+- `GET /deletes` — pending deletes for all known devices
+- `GET /deletes?device=<id>` — pending deletes for one device (JSON array)
+- `PUT|POST /deletes/<filename>?device=<id>` — tee a pending delete (omit `device` = all known)
 - `PUT|POST /deletes` — body `{"name":"file.mp4","device":"phone"}` or `["a.mp4","b.mp4"]`
-- `DELETE /deletes/<filename>?device=phone|fire` — clear marker after the device applied it
+- `DELETE /deletes/<filename>?device=<id>` — clear marker after the device applied it
 - `GET /nox/home` — published Mac mini LAN IP (public; `404 {"error":"not set"}` if never published)
 - `PUT|POST /nox/home` — publish LAN IP (requires `Authorization: Bearer <NOX_HOME_TOKEN>`)
 
@@ -26,51 +41,56 @@ Also exposes **`/nox/home`**: a tiny LAN-IP locator so the Nox Surveillance Goog
 Production: `https://files.signal.observer` (deploy this server or equivalent).
 
 ```bash
-# Health / known device labels
+# Health
 curl -s https://files.signal.observer/health
 
-# List download queue
+# Full shared library (no device filter)
 curl -s https://files.signal.observer/videos
 
-# Remove from download queue (not yet on device, or prevent re-fetch)
+# What one device still needs
+curl -s "https://files.signal.observer/videos?device=pixel-abc12345"
+curl -s "https://files.signal.observer/videos?device=iphone-yellow"
+
+# After download / size-match — ack (does NOT delete the library file)
+curl -X PUT "https://files.signal.observer/acked/SOME_FILE.mp4?device=pixel-abc12345"
+
+# Parent / CoS: remove from library (tees pending deletes)
 curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
 
-# Tee pending delete for a file already on devices (queue may be empty)
+# Tee pending delete for a file already on devices
 curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=phone"
 curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=fire"
-# both:
+# all known devices:
 curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4"
-
-# Or POST JSON
-curl -X POST https://files.signal.observer/deletes \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"SOME_FILE.mp4","device":"phone"}'
 
 # Inspect
 curl -s "https://files.signal.observer/deletes?device=phone"
+curl -s "https://files.signal.observer/acked?device=pixel-abc12345"
 
 # --- Nox home IP locator (TV app rediscovers Mac mini after DHCP resets) ---
-# Mac mini publishes periodically:
 curl -X PUT https://files.signal.observer/nox/home \
   -H "Authorization: Bearer $NOX_HOME_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"lan_ip":"192.168.1.42"}'
-# Optional ports (defaults: dashboard 8091, go2rtc RTSP 8080):
-# -d '{"lan_ip":"192.168.1.42","dashboard_port":8091,"go2rtc_rtsp_port":8080}'
 
-# TV app (or anyone) reads — no auth:
 curl -s https://files.signal.observer/nox/home
-# → {"lan_ip":"...","dashboard_port":8091,"go2rtc_rtsp_port":8080,"updated_at":"..."}
 ```
 
-On the next Android sync, KidVid:
+### Client sync flow
 
-1. `GET /deletes?device=<phone|fire>`
-2. Deletes matching local files
-3. `DELETE /deletes/<filename>?device=...` to clear the marker
-4. Skips re-downloading those names from `/videos`
+1. `GET /deletes?device=<id>` (+ legacy `phone`/`fire` buckets)
+2. Delete matching local files; `DELETE /deletes/<filename>?device=...` to clear
+3. `GET /videos?device=<id>` — only unacked library files
+4. Download missing; on success or size-match → `PUT /acked/<name>?device=<id>`
+5. **Never** `DELETE /videos/...` on normal sync
 
-Parent PIN delete in the app also `DELETE`s `/videos/<name>` and tees pending deletes for both devices.
+Parent PIN delete: local remove + `DELETE /videos/<name>` (server tees pending deletes).
+
+## Ingest
+
+Push new media as a **single copy** into `$KIDVID_DIR/*.mp4` (shared library). Optional matching `$KIDVID_DIR/<stem>.jpg` thumbs are aged out with the mp4.
+
+If a hot-fix left per-device subdirs (`phone/`, `pixel/`, `iphone/`, `fire/`) on Hetzner, flatten back to the library root (or hardlink/copy once into the flat dir). DVD-rip / CoS pipelines should target the shared library, not per-device queues.
 
 ## Quick Start
 
@@ -87,8 +107,9 @@ python3 server.py
 ```
 
 Server listens on port **8643** and registers `_kidvid._tcp` via mDNS (macOS `dns-sd`).
-Pending deletes are stored in `$KIDVID_DIR/deletes.json`.
-Nox home locator state is stored in `$KIDVID_DIR/nox-home.json`.
+Acks: `$KIDVID_DIR/acks.json`. Pending deletes: `$KIDVID_DIR/deletes.json`.
+Nox home: `$KIDVID_DIR/nox-home.json`.
+GC runs at startup and about every hour (override with `KIDVID_GC_INTERVAL_SECONDS`).
 
 ## Auto-Start with launchd
 
@@ -112,5 +133,7 @@ Logs: `/tmp/kidvid-server.log`
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `KIDVID_DIR` | `~/kidvid-videos` | Video directory (`deletes.json` + `nox-home.json` live here) |
+| `KIDVID_DIR` | `~/kidvid-videos` | Shared library directory (`deletes.json` + `acks.json` + `nox-home.json` live here) |
+| `KIDVID_LIBRARY_MAX_AGE_DAYS` | `7` | Age-out threshold using **file mtime** |
+| `KIDVID_GC_INTERVAL_SECONDS` | `3600` | How often the GC loop runs |
 | `NOX_HOME_TOKEN` | *(unset)* | Bearer token required for `PUT\|POST /nox/home`. If unset/empty, writes return **503** (never silently open). `GET /nox/home` stays public. |

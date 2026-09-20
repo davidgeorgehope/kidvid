@@ -38,8 +38,8 @@ cd ios && xcodegen generate && open KidVid.xcodeproj
 | Swipe up/down next/prev | ✅ |
 | Tap left/right seek (±5s, double-tap ±15s) | ✅ |
 | Long-press pause/resume | ✅ |
-| Sync from `files.signal.observer` | ✅ |
-| Pending `/deletes?device=phone` apply + ack | ✅ |
+| Sync from `files.signal.observer` | ✅ shared library + per-device acks |
+| Pending `/deletes?device=…` apply + ack | ✅ |
 | Parent delete (5s hold + PIN `123456`) | ✅ |
 | Guided Access notes | ✅ (docs) |
 | Clone library from Android | 📋 path documented; script follow-up |
@@ -56,13 +56,15 @@ Documents/kidvid/manifest.json  # optional — {"videos":[{"filename","title"},.
 
 `UIFileSharingEnabled` is on: connect the iPhone to a Mac → Finder → the KidVid app → drop files into `kidvid/videos/`.
 
-Device queue label defaults to **`phone`** (UserDefaults `kidvid.device`). Server URL defaults to `https://files.signal.observer` (`kidvid.serverURL`).
+Device id defaults to a generated **`iphone-<8 hex>`** stored in UserDefaults `kidvid.device` (override to e.g. `iphone-yellow`). Server URL defaults to `https://files.signal.observer` (`kidvid.serverURL`).
 
 ## Sync API (same as Android)
 
-1. `GET /deletes?device=phone` → delete matching local files → `DELETE /deletes/<name>?device=phone`
-2. `GET /videos` → download missing → `DELETE /videos/<name>` to drain the queue
-3. Parent PIN delete: local remove + `DELETE /videos/<name>` + `PUT /deletes/<name>?device=phone|fire`
+1. `GET /deletes?device=<id>` (+ legacy `phone`) → delete matching local files → `DELETE /deletes/<name>?device=…`
+2. `GET /videos?device=<id>` → download missing → `PUT /acked/<name>?device=<id>` (library stays until 7-day age-out)
+3. Parent PIN delete: local remove + `DELETE /videos/<name>` (+ pending-delete tee)
+
+Clients **never** `DELETE /videos/...` after a normal download — that starved other devices.
 
 ## Cloning the Android library onto iOS (intended path)
 

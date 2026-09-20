@@ -564,7 +564,7 @@ public class MainActivity extends Activity {
                 File local = new File(path);
                 boolean localOk = !local.exists() || local.delete();
 
-                // Same DELETE path SyncService uses after download (device queue = /videos/<name>)
+                // Parent PIN: remove from shared library + tee pending deletes
                 boolean remoteOk = SyncService.deleteRemoteVideo(filename);
 
                 final boolean localDeleted = localOk;
