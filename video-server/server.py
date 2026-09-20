@@ -3,7 +3,7 @@
 
 Multi-device model (no delete-on-download):
   - One shared library of .mp4 files under $KIDVID_DIR (flat).
-  - GET /videos?device=<id> lists only files that device has not yet acked.
+  - GET /videos?device=<id> lists files not acked and not pending-delete for that device.
   - PUT /acked/<name>?device=<id> records that a device finished (or already has) a file.
   - Library files age out after 7 days based on file mtime (see gc_library).
   - Parent PIN / CoS may DELETE /videos/<name>; pending /deletes still propagates
@@ -225,6 +225,32 @@ def remove_ack_filename(filename):
             save_acks(data)
 
 
+def add_ack_filenames(devices, filename):
+    """Record that each device finished, already has, or applied a delete for filename."""
+    with ACKS_LOCK:
+        data = load_acks()
+        for device in devices:
+            if not device:
+                continue
+            names = data.get(device, [])
+            if filename not in names:
+                names.append(filename)
+            data[device] = names
+        save_acks(data)
+
+
+def hidden_from_listing(device):
+    """Names GET /videos?device= must not offer (acked or still pending delete)."""
+    hidden = set()
+    if not device:
+        return hidden
+    with ACKS_LOCK:
+        hidden.update(load_acks().get(device, []))
+    with DELETES_LOCK:
+        hidden.update(load_deletes().get(device, []))
+    return hidden
+
+
 def gc_library(now=None):
     """Age out shared-library media older than LIBRARY_MAX_AGE_SECONDS.
 
@@ -379,14 +405,11 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
                 self._send_error(400, "invalid device")
                 return
 
-        acked = set()
-        if device:
-            with ACKS_LOCK:
-                acked = set(load_acks().get(device, []))
+        hidden = hidden_from_listing(device)
 
         videos = []
         for f in iter_library_mp4s():
-            if device and f.name in acked:
+            if device and f.name in hidden:
                 continue
             videos.append({
                 "name": f.name,
@@ -566,13 +589,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(400, "device required")
             return
         device = devices[0]
-        with ACKS_LOCK:
-            data = load_acks()
-            names = data.get(device, [])
-            if filename not in names:
-                names.append(filename)
-            data[device] = names
-            save_acks(data)
+        add_ack_filenames([device], filename)
         self._send_json(200, {"acked": filename, "device": device})
 
     def _ack_download_from_body(self, qs):
@@ -672,6 +689,9 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
                 if filename in data.get(d, []):
                     data[d] = [n for n in data[d] if n != filename]
             save_deletes(data)
+        # Library copy may still be on disk (CoS tee without DELETE /videos).
+        # Record acks so GET /videos?device= will not re-offer the name.
+        add_ack_filenames(devices, filename)
         self._send_json(200, {"cleared": filename, "devices": devices})
 
     def _send_json(self, code, obj):

@@ -48,6 +48,8 @@ final class SyncService: ObservableObject {
                     pendingNames.insert(name)
                     let ok = library.deleteLocal(filename: name)
                     if ok {
+                        // Ack this install so listing will not re-offer if the library copy remains.
+                        _ = await api.ackDownload(filename: name, device: device)
                         _ = await api.ackDelete(filename: name, device: bucket)
                     } else {
                         print("[KidVid] Local delete incomplete for \(name); will retry")

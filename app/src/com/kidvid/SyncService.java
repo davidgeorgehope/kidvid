@@ -29,6 +29,7 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -310,6 +311,8 @@ public class SyncService extends Service {
                 pending.add(name);
                 deleteLocalCopies(name, primaryVideoDir);
                 if (!localCopyExists(name, primaryVideoDir)) {
+                    // Ack this install so listing will not re-offer if the library copy remains.
+                    ackDownload(baseUrl, name, deviceId(this));
                     deleteFromServerUrl(baseUrl + "/deletes/" + name + "?device=" + device);
                 } else {
                     Log.w(TAG, "Local delete incomplete for " + name + "; will retry next sync");
@@ -327,6 +330,7 @@ public class SyncService extends Service {
                     pending.add(name);
                     deleteLocalCopies(name, primaryVideoDir);
                     if (!localCopyExists(name, primaryVideoDir)) {
+                        ackDownload(baseUrl, name, deviceId(this));
                         deleteFromServerUrl(baseUrl + "/deletes/" + name + "?device=" + device);
                     }
                 }
@@ -444,6 +448,18 @@ public class SyncService extends Service {
     }
 
     /**
+     * Percent-encode a single path segment. URLEncoder is form-encoding
+     * (space → +); the server uses unquote(), which does not treat + as space.
+     */
+    private static String encodePathSegment(String filename) {
+        try {
+            return URLEncoder.encode(filename, "UTF-8").replace("+", "%20");
+        } catch (java.io.UnsupportedEncodingException e) {
+            return filename;
+        }
+    }
+
+    /**
      * Record that this device has the file (download or size-match).
      * Does NOT delete the shared library copy.
      */
@@ -451,7 +467,7 @@ public class SyncService extends Service {
         if (filename == null || filename.isEmpty()) return false;
         if (filename.contains("/") || filename.contains("\\") || filename.contains("..")) return false;
         String d = (device == null || device.isEmpty()) ? "android" : device;
-        String urlStr = baseUrl + "/acked/" + filename + "?device=" + d;
+        String urlStr = baseUrl + "/acked/" + encodePathSegment(filename) + "?device=" + d;
         try {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();

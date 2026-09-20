@@ -65,6 +65,24 @@ class SharedLibraryTests(unittest.TestCase):
         filtered = [f.name for f in self.server.iter_library_mp4s() if f.name not in acked]
         self.assertEqual(filtered, ["b.mp4"])
 
+    def test_pending_delete_hidden_from_listing(self):
+        self._touch_mp4("gone.mp4")
+        self._touch_mp4("keep.mp4")
+        with self.server.DELETES_LOCK:
+            self.server.save_deletes({"pixel-1": ["gone.mp4"], "phone": [], "fire": []})
+
+        hidden = self.server.hidden_from_listing("pixel-1")
+        filtered = [f.name for f in self.server.iter_library_mp4s() if f.name not in hidden]
+        self.assertEqual(filtered, ["keep.mp4"])
+        self.assertEqual(self.server.hidden_from_listing("iphone-1"), set())
+
+    def test_ack_delete_records_ack(self):
+        self.server.add_ack_filenames(["pixel-1"], "tee-only.mp4")
+        with self.server.ACKS_LOCK:
+            self.assertIn("tee-only.mp4", self.server.load_acks().get("pixel-1", []))
+        hidden = self.server.hidden_from_listing("pixel-1")
+        self.assertIn("tee-only.mp4", hidden)
+
     def test_safe_device_id(self):
         self.assertEqual(self.server.safe_device_id("iphone-yellow"), "iphone-yellow")
         self.assertEqual(self.server.safe_device_id("pixel-abc12345"), "pixel-abc12345")
