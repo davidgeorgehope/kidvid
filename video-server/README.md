@@ -9,7 +9,7 @@ Previously each client `DELETE`d a file after download, so the first device to s
 1. **One shared library** — drop `.mp4` files into `$KIDVID_DIR` (flat). Prefer a single library push; do not use per-device `phone/` / `fire/` / `pixel/` / `iphone/` subdirs going forward.
 2. **Per-device acks** — after a successful download (or local size-match), clients `PUT /acked/<name>?device=<id>`. The library file stays on disk.
 3. **Filtered listing** — `GET /videos?device=<id>` returns only files that device has **not** yet acked (so Pixel + multiple iPhones each get a turn).
-4. **7-day age-out** — a GC loop removes `.mp4` (and matching `.jpg` thumbs) whose **filesystem mtime** is older than 7 days. No sidecar `added_at`. Never deletes `deletes.json`, `acks.json`, or `nox-home.json`.
+4. **Permanent library** — files stay on the server forever unless removed by parent/CoS `DELETE`. Optional age-out GC exists only if `KIDVID_LIBRARY_MAX_AGE_DAYS` is set to a positive number (default **0** = disabled). Acks still filter per-device listings.
 5. **Parent / CoS delete** — `DELETE /videos/<name>?parent=1` (or header `X-KidVid-Action: parent-delete`) removes from the library and tees pending deletes. Bare `DELETE` without the guard returns **403** so old delete-on-download clients cannot wipe the shared library. Sync must **never** DELETE.
 
 Pending **`/deletes`** remains for parent-driven remote delete propagation across devices.
@@ -19,7 +19,7 @@ Also exposes **`/nox/home`**: a tiny LAN-IP locator so the Nox Surveillance Goog
 ## Endpoints
 
 - `GET /` — server info
-- `GET /health` — `{"status":"ok","mode":"shared-library","library_max_age_days":7,"devices":[...]}`
+- `GET /health` — `{"status":"ok","mode":"shared-library","library_gc":"disabled","library_max_age_days":null,"devices":[...]}`
 - `GET /videos` — JSON list of all library `.mp4` files (name, size, URL)
 - `GET /videos?device=<id>` — library files **not yet acked** by that device
 - `GET /videos/<filename>` — download a video file
@@ -93,7 +93,7 @@ Parent PIN delete: local remove + `DELETE /videos/<name>?parent=1` (server tees 
 
 ## Ingest
 
-Push new media as a **single copy** into `$KIDVID_DIR/*.mp4` (shared library). Optional matching `$KIDVID_DIR/<stem>.jpg` thumbs are aged out with the mp4.
+Push new media as a **single copy** into `$KIDVID_DIR/*.mp4` (shared library). Optional matching `$KIDVID_DIR/<stem>.jpg` thumbs may accompany the mp4; they are only removed with the video (parent DELETE or optional GC).
 
 If a hot-fix left per-device subdirs (`phone/`, `pixel/`, `iphone/`, `fire/`) on Hetzner, flatten back to the library root (or hardlink/copy once into the flat dir). DVD-rip / CoS pipelines should target the shared library, not per-device queues.
 
@@ -114,7 +114,7 @@ python3 server.py
 Server listens on port **8643** and registers `_kidvid._tcp` via mDNS (macOS `dns-sd`).
 Acks: `$KIDVID_DIR/acks.json`. Pending deletes: `$KIDVID_DIR/deletes.json`.
 Nox home: `$KIDVID_DIR/nox-home.json`.
-GC runs at startup and about every hour (override with `KIDVID_GC_INTERVAL_SECONDS`).
+Library GC is **off by default** (permanent library). Set `KIDVID_LIBRARY_MAX_AGE_DAYS` > 0 to enable optional mtime age-out.
 
 ## Auto-Start with launchd
 
@@ -139,6 +139,6 @@ Logs: `/tmp/kidvid-server.log`
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `KIDVID_DIR` | `~/kidvid-videos` | Shared library directory (`deletes.json` + `acks.json` + `nox-home.json` live here) |
-| `KIDVID_LIBRARY_MAX_AGE_DAYS` | `7` | Age-out threshold using **file mtime** |
-| `KIDVID_GC_INTERVAL_SECONDS` | `3600` | How often the GC loop runs |
+| `KIDVID_LIBRARY_MAX_AGE_DAYS` | `0` | **0 = GC disabled** (permanent library). Set a positive number (e.g. `7`, or `36500` like a near-infinite live override) to age out by **file mtime**. |
+| `KIDVID_GC_INTERVAL_SECONDS` | `3600` | How often the GC loop runs when age-out is enabled |
 | `NOX_HOME_TOKEN` | *(unset)* | Bearer token required for `PUT\|POST /nox/home`. If unset/empty, writes return **503** (never silently open). `GET /nox/home` stays public. |

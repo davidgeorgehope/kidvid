@@ -1,28 +1,39 @@
 #!/usr/bin/env python3
 """Smoke tests for shared-library GC + ack filtering (no network)."""
 
-import json
 import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
 
 
 class SharedLibraryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = self.tmp.name
-        # Import server module with KIDVID_DIR pointed at tmp
+        # Import server module with KIDVID_DIR pointed at tmp; default GC off
         os.environ["KIDVID_DIR"] = self.dir
+        os.environ.pop("KIDVID_LIBRARY_MAX_AGE_DAYS", None)
         import importlib
         import server
         importlib.reload(server)
         self.server = server
 
     def tearDown(self):
+        os.environ.pop("KIDVID_LIBRARY_MAX_AGE_DAYS", None)
         self.tmp.cleanup()
+
+    def _reload_with_age_days(self, days):
+        os.environ["KIDVID_DIR"] = self.dir
+        if days is None:
+            os.environ.pop("KIDVID_LIBRARY_MAX_AGE_DAYS", None)
+        else:
+            os.environ["KIDVID_LIBRARY_MAX_AGE_DAYS"] = str(days)
+        import importlib
+        import server
+        importlib.reload(server)
+        self.server = server
 
     def _touch_mp4(self, name, age_days=0):
         path = Path(self.dir) / name
@@ -32,7 +43,18 @@ class SharedLibraryTests(unittest.TestCase):
             os.utime(path, (old, old))
         return path
 
-    def test_gc_removes_old_mp4_and_jpg_keeps_state_files(self):
+    def test_gc_disabled_by_default_keeps_old_files(self):
+        old = self._touch_mp4("old.mp4", age_days=8)
+        thumb = Path(self.dir) / "old.jpg"
+        thumb.write_bytes(b"jpg")
+        self.assertFalse(self.server.GC_ENABLED)
+        removed = self.server.gc_library()
+        self.assertEqual(removed, [])
+        self.assertTrue(old.exists())
+        self.assertTrue(thumb.exists())
+
+    def test_gc_removes_old_mp4_when_age_days_set(self):
+        self._reload_with_age_days(7)
         old = self._touch_mp4("old.mp4", age_days=8)
         thumb = Path(self.dir) / "old.jpg"
         thumb.write_bytes(b"jpg")
@@ -42,6 +64,7 @@ class SharedLibraryTests(unittest.TestCase):
         (Path(self.dir) / "acks.json").write_text("{}\n")
         (Path(self.dir) / "nox-home.json").write_text("{}\n")
 
+        self.assertTrue(self.server.GC_ENABLED)
         removed = self.server.gc_library()
         self.assertEqual(removed, ["old.mp4"])
         self.assertFalse(old.exists())

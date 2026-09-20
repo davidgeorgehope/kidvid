@@ -5,7 +5,8 @@ Multi-device model (no delete-on-download):
   - One shared library of .mp4 files under $KIDVID_DIR (flat).
   - GET /videos?device=<id> lists only files that device has not yet acked.
   - PUT /acked/<name>?device=<id> records that a device finished (or already has) a file.
-  - Library files age out after 7 days based on file mtime (see gc_library).
+  - Library is permanent by default (no age-out). Optional GC via
+    KIDVID_LIBRARY_MAX_AGE_DAYS>0. Parent PIN DELETE still removes files.
   - Parent PIN / CoS may DELETE /videos/<name>; pending /deletes still propagates
     remote deletes to devices that already downloaded a copy.
 
@@ -35,11 +36,24 @@ NOX_HOME_LOCK = threading.Lock()
 GC_LOCK = threading.Lock()
 DEFAULT_DASHBOARD_PORT = 8091
 DEFAULT_GO2RTC_RTSP_PORT = 8080
-# Age-out: remove library .mp4 (and matching .jpg thumb) when mtime is older
-# than this many seconds. Documented in README — uses filesystem mtime, not a sidecar.
-LIBRARY_MAX_AGE_SECONDS = int(os.environ.get("KIDVID_LIBRARY_MAX_AGE_DAYS", "7")) * 24 * 3600
+
+
+def _parse_library_max_age_days():
+    """Days before optional mtime age-out. 0 / unset / negative = GC disabled (permanent)."""
+    raw = (os.environ.get("KIDVID_LIBRARY_MAX_AGE_DAYS") or "0").strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        return 0
+    return days if days > 0 else 0
+
+
+# Default 0 = keep full library forever. Set e.g. 7 or 36500 to enable mtime GC.
+LIBRARY_MAX_AGE_DAYS = _parse_library_max_age_days()
+LIBRARY_MAX_AGE_SECONDS = LIBRARY_MAX_AGE_DAYS * 24 * 3600 if LIBRARY_MAX_AGE_DAYS else 0
 GC_INTERVAL_SECONDS = int(os.environ.get("KIDVID_GC_INTERVAL_SECONDS", str(3600)))
 PROTECTED_NAMES = frozenset({"deletes.json", "acks.json", "nox-home.json"})
+GC_ENABLED = LIBRARY_MAX_AGE_SECONDS > 0
 
 
 def deletes_path():
@@ -226,14 +240,14 @@ def remove_ack_filename(filename):
 
 
 def gc_library(now=None):
-    """Age out shared-library media older than LIBRARY_MAX_AGE_SECONDS.
+    """Optional age-out of shared-library media older than LIBRARY_MAX_AGE_SECONDS.
 
-    Age source: filesystem mtime of the .mp4 (when the file was last written /
-    copied into the library). No sidecar. Only deletes:
-      - *.mp4
-      - matching *.jpg thumbnail (same stem), if present
-    Never touches deletes.json / acks.json / nox-home.json.
+    Disabled by default (LIBRARY_MAX_AGE_DAYS=0): library is permanent until
+    parent/CoS DELETE. When enabled, age source is filesystem mtime of the .mp4.
+    Only deletes *.mp4 and matching *.jpg thumbs. Never touches state JSON files.
     """
+    if not GC_ENABLED:
+        return []
     if now is None:
         now = time.time()
     removed = []
@@ -264,6 +278,9 @@ def gc_library(now=None):
 
 
 def start_gc_thread():
+    if not GC_ENABLED:
+        return None
+
     def loop():
         while True:
             try:
@@ -371,7 +388,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             b"DELETE /deletes/<name>?device=<id> - clear after device applied\n"
             b"GET /nox/home - Mac mini LAN IP locator (public)\n"
             b"PUT|POST /nox/home - publish LAN IP (Bearer NOX_HOME_TOKEN)\n"
-            b"\nLibrary GC: .mp4 (+ matching .jpg) older than 7 days by mtime.\n"
+            b"\nLibrary is permanent by default (no age-out GC).\n"
             b"Bare DELETE /videos/<name> returns 403 (blocks old delete-on-download clients).\n"
         )
 
@@ -379,7 +396,8 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, {
             "status": "ok",
             "mode": "shared-library",
-            "library_max_age_days": LIBRARY_MAX_AGE_SECONDS // 86400,
+            "library_max_age_days": LIBRARY_MAX_AGE_DAYS if GC_ENABLED else None,
+            "library_gc": "enabled" if GC_ENABLED else "disabled",
             "devices": known_devices(),
         })
 
@@ -726,11 +744,14 @@ def register_mdns():
 def main():
     os.makedirs(VIDEO_DIR, exist_ok=True)
 
-    # Startup GC + periodic age-out (7-day mtime)
-    removed = gc_library()
-    if removed:
-        print(f"[KidVid] Startup GC removed {len(removed)} aged file(s)")
-    start_gc_thread()
+    if GC_ENABLED:
+        removed = gc_library()
+        if removed:
+            print(f"[KidVid] Startup GC removed {len(removed)} aged file(s)")
+        start_gc_thread()
+        print(f"[KidVid] Library GC: mtime older than {LIBRARY_MAX_AGE_DAYS} days")
+    else:
+        print("[KidVid] Library GC: disabled (permanent library until parent DELETE)")
 
     mdns_proc = register_mdns()
 
@@ -741,7 +762,6 @@ def main():
     print(f"[KidVid] Acks: http://localhost:{PORT}/acked")
     print(f"[KidVid] Pending deletes: http://localhost:{PORT}/deletes")
     print(f"[KidVid] Nox home: http://localhost:{PORT}/nox/home")
-    print(f"[KidVid] Library GC: mtime older than {LIBRARY_MAX_AGE_SECONDS // 86400} days")
     if not (os.environ.get("NOX_HOME_TOKEN") or ""):
         print("[KidVid] NOX_HOME_TOKEN unset — PUT/POST /nox/home will return 503")
 
