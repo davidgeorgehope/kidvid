@@ -422,11 +422,12 @@ public class SyncService extends Service {
 
     /**
      * Parent-delete / CoS helper: DELETE library file on the server.
+     * Requires ?parent=1 (Hetzner guard) so bare DELETEs from old sync clients are ignored.
      * Server also tees pending deletes for all known devices; we still tee
      * legacy phone+fire for older servers / CoS scripts.
      *
      * curl examples:
-     *   curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+     *   curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4?parent=1"
      *   curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4"
      */
     public static boolean deleteRemoteVideo(String filename) {
@@ -435,8 +436,9 @@ public class SyncService extends Service {
             Log.w(TAG, "Refusing DELETE with unsafe filename: " + filename);
             return false;
         }
-        // DELETE removes from shared library; server tees pending deletes to known devices
-        boolean libraryGone = deleteFromServerUrl(REMOTE_SERVER_URL + "/videos/" + filename);
+        // Parent PIN only — sync path must never call this. ?parent=1 required by server guard.
+        boolean libraryGone = deleteFromServerUrl(
+                REMOTE_SERVER_URL + "/videos/" + filename + "?parent=1");
         // Extra tee for legacy buckets (no-op if server already covered them)
         boolean pendingPhone = queuePendingDelete(REMOTE_SERVER_URL, filename, "phone");
         boolean pendingFire = queuePendingDelete(REMOTE_SERVER_URL, filename, "fire");

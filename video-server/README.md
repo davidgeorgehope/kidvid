@@ -10,7 +10,7 @@ Previously each client `DELETE`d a file after download, so the first device to s
 2. **Per-device acks** — after a successful download (or local size-match), clients `PUT /acked/<name>?device=<id>`. The library file stays on disk.
 3. **Filtered listing** — `GET /videos?device=<id>` returns only files that device has **not** yet acked (so Pixel + multiple iPhones each get a turn).
 4. **7-day age-out** — a GC loop removes `.mp4` (and matching `.jpg` thumbs) whose **filesystem mtime** is older than 7 days. No sidecar `added_at`. Never deletes `deletes.json`, `acks.json`, or `nox-home.json`.
-5. **Parent / CoS delete** — `DELETE /videos/<name>` removes from the library and tees pending deletes for known devices. Clients must **not** DELETE after normal sync.
+5. **Parent / CoS delete** — `DELETE /videos/<name>?parent=1` (or header `X-KidVid-Action: parent-delete`) removes from the library and tees pending deletes. Bare `DELETE` without the guard returns **403** so old delete-on-download clients cannot wipe the shared library. Sync must **never** DELETE.
 
 Pending **`/deletes`** remains for parent-driven remote delete propagation across devices.
 
@@ -23,7 +23,7 @@ Also exposes **`/nox/home`**: a tiny LAN-IP locator so the Nox Surveillance Goog
 - `GET /videos` — JSON list of all library `.mp4` files (name, size, URL)
 - `GET /videos?device=<id>` — library files **not yet acked** by that device
 - `GET /videos/<filename>` — download a video file
-- `DELETE /videos/<filename>` — parent/CoS remove from library (+ tee pending deletes for known devices)
+- `DELETE /videos/<filename>?parent=1` — parent/CoS remove from library (+ tee pending deletes). Also accepts header `X-KidVid-Action: parent-delete`. Without either → **403**.
 - `PUT|POST /acked/<filename>?device=<id>` — mark downloaded for device (required `device`)
 - `PUT|POST /acked` or `/receipts` — body `{"name":"file.mp4","device":"pixel-…"}`
 - `GET /acked` — all acks `{device:[filenames…]}`
@@ -54,8 +54,9 @@ curl -s "https://files.signal.observer/videos?device=iphone-yellow"
 # After download / size-match — ack (does NOT delete the library file)
 curl -X PUT "https://files.signal.observer/acked/SOME_FILE.mp4?device=pixel-abc12345"
 
-# Parent / CoS: remove from library (tees pending deletes)
-curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+# Parent / CoS: remove from library (tees pending deletes) — ?parent=1 required
+curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4?parent=1"
+# or: -H "X-KidVid-Action: parent-delete"
 
 # Tee pending delete for a file already on devices
 curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=phone"
@@ -84,7 +85,11 @@ curl -s https://files.signal.observer/nox/home
 4. Download missing; on success or size-match → `PUT /acked/<name>?device=<id>`
 5. **Never** `DELETE /videos/...` on normal sync
 
-Parent PIN delete: local remove + `DELETE /videos/<name>` (server tees pending deletes).
+Parent PIN delete: local remove + `DELETE /videos/<name>?parent=1` (server tees pending deletes).
+
+### DELETE guard (Hetzner hot-fix)
+
+`DELETE /videos/<name>` without `?parent=1` **or** `X-KidVid-Action: parent-delete` returns `403 {"error":"parent delete required …"}` and does not remove the file. This exists because older app builds still deleted after download and would empty the shared library.
 
 ## Ingest
 

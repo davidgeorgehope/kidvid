@@ -71,6 +71,19 @@ class SharedLibraryTests(unittest.TestCase):
         self.assertIsNone(self.server.safe_device_id("../x"))
         self.assertIsNone(self.server.safe_device_id("has space"))
 
+    def test_parent_delete_guard(self):
+        h = object.__new__(self.server.KidVidHandler)
+        h.headers = {}
+        auth = self.server.KidVidHandler._parent_delete_authorized
+        self.assertFalse(auth(h, {}))
+        self.assertFalse(auth(h, {"parent": ["0"]}))
+        self.assertTrue(auth(h, {"parent": ["1"]}))
+        self.assertTrue(auth(h, {"parent": ["true"]}))
+        h.headers = {"X-KidVid-Action": "parent-delete"}
+        self.assertTrue(auth(h, {}))
+        h.headers = {"X-KidVid-Action": "sync"}
+        self.assertFalse(auth(h, {}))
+
 
 if __name__ == "__main__":
     unittest.main()

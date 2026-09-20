@@ -38,10 +38,14 @@ final class ServerAPI: @unchecked Sendable {
         await put(path: "/acked/\(encoded(filename))", query: ["device": device])
     }
 
-    /// Parent/CoS: remove from shared library (server also tees pending deletes).
+    /// Parent/CoS: remove from shared library. Requires `?parent=1` (server guard).
     @discardableResult
     func deleteFromLibrary(filename: String) async -> Bool {
-        await delete(path: "/videos/\(encoded(filename))")
+        await delete(
+            path: "/videos/\(encoded(filename))",
+            query: ["parent": "1"],
+            headers: ["X-KidVid-Action": "parent-delete"]
+        )
     }
 
     @discardableResult
@@ -54,7 +58,7 @@ final class ServerAPI: @unchecked Sendable {
         await delete(path: "/deletes/\(encoded(filename))", query: ["device": device])
     }
 
-    /// Parent delete: library DELETE + tee legacy phone/fire buckets.
+    /// Parent PIN delete only — sync never calls this. Library DELETE + tee phone/fire.
     func parentDeleteRemote(filename: String) async -> Bool {
         let libraryGone = await deleteFromLibrary(filename: filename)
         let phone = await queuePendingDelete(filename: filename, device: "phone")
@@ -110,11 +114,18 @@ final class ServerAPI: @unchecked Sendable {
     }
 
     @discardableResult
-    private func delete(path: String, query: [String: String] = [:]) async -> Bool {
+    private func delete(
+        path: String,
+        query: [String: String] = [:],
+        headers: [String: String] = [:]
+    ) async -> Bool {
         let url = makeURL(path: path, query: query)
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.timeoutInterval = 30
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1

@@ -40,7 +40,7 @@ Junk that slipped into the library (e.g. a Shorts face-gag) can be removed witho
 1. Open the video picker (film button).
 2. **Press and hold** a thumbnail for **~5 seconds** (a normal tap still just plays).
 3. Enter parent PIN **`123456`**.
-4. On success the file is deleted from the device, removed from the **shared library** (`DELETE /videos/<filename>`), and teed as a pending delete so other devices drop it on next sync.
+4. On success the file is deleted from the device, removed from the **shared library** (`DELETE /videos/<filename>?parent=1`), and teed as a pending delete so other devices drop it on next sync.
 
 Wrong PIN or Cancel leaves the library unchanged. Lock-task / sticky lockdown behavior is untouched.
 
@@ -60,7 +60,7 @@ Tee a **pending delete** and/or remove from the shared library. On the next sync
 
 ```bash
 # Remove from shared library (also tees pending deletes for known devices):
-curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
+curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4?parent=1"
 
 # Or tee a durable pending delete without removing the library file yet:
 curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4?device=phone"
