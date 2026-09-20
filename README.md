@@ -51,7 +51,7 @@ Pixel, Fire, and multiple iPhones all pull from **one shared library**. Clients 
 1. Each install has a stable `device` id (e.g. `pixel-…`, `iphone-yellow`, or a generated UUID in prefs).
 2. `GET /videos?device=<id>` lists only files that device has not yet acked.
 3. After download or local size-match → `PUT /acked/<name>?device=<id>`.
-4. Server ages out library `.mp4` files older than **7 days** (by file **mtime**).
+4. Library stays on the server **permanently** (acks only hide it from that device’s list). Parent PIN / CoS `DELETE ?parent=1` is what removes it.
 
 See [`video-server/README.md`](video-server/README.md) for endpoints and ingest notes.
 

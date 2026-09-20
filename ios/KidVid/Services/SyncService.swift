@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// Background sync: apply pending deletes, download new videos, ack per-device.
-/// Shared library stays on the server until 7-day age-out — clients never DELETE after download.
+/// Shared library stays on the server permanently (acks filter re-offers) — clients never DELETE after download.
 @MainActor
 final class SyncService: ObservableObject {
     @Published private(set) var isSyncing = false

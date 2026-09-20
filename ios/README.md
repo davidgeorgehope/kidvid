@@ -61,7 +61,7 @@ Device id defaults to a generated **`iphone-<8 hex>`** stored in UserDefaults `k
 ## Sync API (same as Android)
 
 1. `GET /deletes?device=<id>` (+ legacy `phone`) → delete matching local files → `DELETE /deletes/<name>?device=…`
-2. `GET /videos?device=<id>` → download missing → `PUT /acked/<name>?device=<id>` (library stays until 7-day age-out)
+2. `GET /videos?device=<id>` → download missing → `PUT /acked/<name>?device=<id>` (library stays permanently; acks stop re-offering)
 3. Parent PIN delete: local remove + `DELETE /videos/<name>?parent=1` (+ pending-delete tee)
 
 Clients **never** `DELETE /videos/...` after a normal download — that starved other devices.
