@@ -335,12 +335,24 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
 
         if path.startswith("/videos/"):
             filename = urllib.parse.unquote(path[len("/videos/"):])
+            if not self._parent_delete_authorized(qs):
+                # Guard: bare DELETE from old sync clients must not wipe the shared library.
+                self._send_error(403, "parent delete required (?parent=1 or X-KidVid-Action: parent-delete)")
+                return
             self._delete_file(filename, qs)
         elif path.startswith("/deletes/"):
             filename = urllib.parse.unquote(path[len("/deletes/"):])
             self._ack_delete(filename, qs)
         else:
             self._send_error(404, "not found")
+
+    def _parent_delete_authorized(self, qs):
+        """True if this DELETE is an intentional parent/CoS library remove."""
+        parent = (qs.get("parent") or [None])[0]
+        if parent is not None and str(parent).strip() in ("1", "true", "yes"):
+            return True
+        action = (self.headers.get("X-KidVid-Action") or "").strip().lower()
+        return action == "parent-delete"
 
     def _serve_index(self):
         self.send_response(200)
@@ -351,7 +363,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             b"GET /videos - list shared library (all .mp4)\n"
             b"GET /videos?device=<id> - list files not yet acked by that device\n"
             b"GET /videos/<name> - download video\n"
-            b"DELETE /videos/<name> - parent/CoS remove from library (+ tee pending deletes)\n"
+            b"DELETE /videos/<name>?parent=1 - parent/CoS remove (or X-KidVid-Action: parent-delete)\n"
             b"PUT|POST /acked/<name>?device=<id> - mark downloaded for device\n"
             b"GET /acked?device=<id> - list acked filenames for device\n"
             b"GET /deletes?device=<id> - pending remote deletes\n"
@@ -360,6 +372,7 @@ class KidVidHandler(http.server.BaseHTTPRequestHandler):
             b"GET /nox/home - Mac mini LAN IP locator (public)\n"
             b"PUT|POST /nox/home - publish LAN IP (Bearer NOX_HOME_TOKEN)\n"
             b"\nLibrary GC: .mp4 (+ matching .jpg) older than 7 days by mtime.\n"
+            b"Bare DELETE /videos/<name> returns 403 (blocks old delete-on-download clients).\n"
         )
 
     def _serve_health(self):
