@@ -1,0 +1,47 @@
+# Scratch project for simulator UI tests only (the shipping KidVid.xcodeproj
+# is hand-maintained; don't regenerate it). Usage: see ios/uitest/README.md
+name: KidVidUITest
+options:
+  bundleIdPrefix: com.kidvid
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  SWIFT_VERSION: "5.0"
+targets:
+  KidVid:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../KidVid
+        excludes:
+          - "**/*.md"
+          - "Services/tmp_deploy/**"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kidvid.ios
+        INFOPLIST_FILE: ../KidVid/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG KIDVID_UITEST"
+  KidVidUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: KidVidUITests
+    dependencies:
+      - target: KidVid
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: KidVid
+        CODE_SIGNING_ALLOWED: NO
+schemes:
+  KidVidUITests:
+    build:
+      targets:
+        KidVid: all
+        KidVidUITests: [test]
+    test:
+      targets:
+        - KidVidUITests

@@ -12,8 +12,17 @@ struct PlayerView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                VideoPlayerLayer(player: model.player)
+                // Poster of the current video sits underneath, so while a video is
+                // still opening (or can't be played) you see its picture, never black.
+                ActivePoster(slot: model.activeSlot, item: model.currentVideo)
                     .ignoresSafeArea()
+
+                // Every player keeps its own layer for the whole session; a swipe just
+                // changes which one is visible.
+                ForEach(model.slots) { slot in
+                    SlotLayerView(slot: slot, isActive: slot.id == model.activeSlotID)
+                        .ignoresSafeArea()
+                }
 
                 KidPlayerGestureOverlay(
                     onSwipeUp: { model.next() },
@@ -77,6 +86,9 @@ struct PlayerView: View {
             }
         }
         .ignoresSafeArea()
+        // Kids swipe from the very edge: make the first edge swipe stay in the app
+        // instead of pulling down Notification Center or going Home.
+        .defersSystemGestures(on: .vertical)
     }
 
     private func flashHint(_ text: String) {
@@ -87,25 +99,124 @@ struct PlayerView: View {
     }
 }
 
+/// One slot's AVPlayerLayer. Always in the hierarchy (bound to the same AVPlayer
+/// forever); shown only when it's the active slot and has a real frame.
+struct SlotLayerView: View {
+    @ObservedObject var slot: PlayerSlot
+    let isActive: Bool
+
+    var body: some View {
+        VideoPlayerLayer(slot: slot)
+            .opacity(isActive && slot.hasFrame ? 1 : 0)
+            .allowsHitTesting(false)
+            .accessibilityElement()
+            .accessibilityIdentifier("kidvid.slot.\(slot.id)")
+            .accessibilityValue(isActive ? stateLabel : "idle")
+    }
+
+    private var stateLabel: String {
+        if slot.hasFrame { return "showing" }
+        if slot.failed { return "failed" }
+        if slot.noPicture { return "noPicture" }
+        return "loading"
+    }
+}
+
 /// Bare AVPlayer layer — no system playback chrome.
 struct VideoPlayerLayer: UIViewRepresentable {
-    let player: AVPlayer
+    let slot: PlayerSlot
 
     func makeUIView(context: Context) -> PlayerUIView {
         let view = PlayerUIView()
-        view.playerLayer.player = player
+        view.backgroundColor = .clear
         view.playerLayer.videoGravity = .resizeAspect
+        view.playerLayer.player = slot.player
+        slot.layer = view.playerLayer
+        view.onReadyForDisplay = { [weak slot] in
+            slot?.layerReadyChanged()
+        }
         return view
     }
 
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
-        uiView.playerLayer.player = player
+        // Never re-assign playerLayer.player here: re-binding a layer blanks it
+        // until the next decoded frame.
+        if uiView.playerLayer.player !== slot.player {
+            uiView.playerLayer.player = slot.player
+        }
+        if slot.layer !== uiView.playerLayer { slot.layer = uiView.playerLayer }
     }
 }
 
 final class PlayerUIView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+
+    var onReadyForDisplay: (() -> Void)?
+    private var readyObservation: NSKeyValueObservation?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.onReadyForDisplay?() }
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+/// Poster for the current video, hidden once its player has a real frame.
+struct ActivePoster: View {
+    @ObservedObject var slot: PlayerSlot
+    let item: VideoItem?
+
+    var body: some View {
+        PosterView(item: item)
+            .overlay(alignment: .bottom) {
+                if slot.noPicture {
+                    // Sound only: this phone can't decode the picture of this file.
+                    Text("🎵")
+                        .font(.system(size: 44))
+                        .padding(.bottom, 90)
+                }
+            }
+            .opacity(slot.hasFrame ? 0 : 1)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Still picture for the current video (sidecar .jpg or a generated frame).
+struct PosterView: View {
+    let item: VideoItem?
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else if let item {
+                Text(item.title)
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .padding(32)
+            }
+        }
+        .task(id: item?.url) {
+            guard let url = item?.url else { image = nil; return }
+            if let hit = ThumbnailGenerator.cached(for: url) {
+                image = hit
+                return
+            }
+            image = nil
+            let generated = await ThumbnailGenerator.generate(for: url, at: 0.5)
+            guard !Task.isCancelled, item?.url == url else { return }
+            image = generated
+        }
+    }
 }
 
 // MARK: - Kid gestures (UIKit)

@@ -110,6 +110,24 @@ iOS has no public Device Owner lock-task equivalent for sideloaded apps. Use:
 | 🎬 button | Video picker |
 | Picker: hold thumbnail ~5s | Parent delete PIN |
 
+### Player internals (why swipes never go black)
+
+`PlayerModel` keeps **three AVPlayers**, each permanently bound to its own
+`AVPlayerLayer`: the current video plus the next and previous ones pre-rolled
+(paused on their first frame). A swipe only changes which layer is visible and
+starts it, so nothing is torn down on screen. Under the layers sits the
+video's poster (sidecar `.jpg` / generated frame / title), shown until the
+layer reports `isReadyForDisplay`, so a slow or unplayable file shows a picture,
+not a black screen:
+
+- **Unplayable file** (truncated/corrupt download, `AVPlayerItem.status == .failed`):
+  poster for ~1s, then auto-skip in the swipe direction.
+- **Sound but no picture** (AV1/VP9 YouTube downloads on phones without a
+  hardware decoder, e.g. iPhone SE 3): poster + 🎵 while the audio plays.
+  Re-encode such files to H.264 to get the picture back.
+
+Simulator regression test: `ios/uitest/` (`sim-swipe-test.sh <videos-dir> <out-dir>`).
+
 ## Project layout
 
 ```
