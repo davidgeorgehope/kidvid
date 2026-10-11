@@ -38,6 +38,12 @@ final class ServerAPI: @unchecked Sendable {
         await put(path: "/acked/\(encoded(filename))", query: ["device": device])
     }
 
+    /// Device deleted a local copy to free space — clear ack so it can reappear in /videos.
+    @discardableResult
+    func unackDownload(filename: String, device: String) async -> Bool {
+        await delete(path: "/acked/\(encoded(filename))", query: ["device": device])
+    }
+
     /// Parent/CoS: remove from shared library. Requires `?parent=1` (server guard).
     @discardableResult
     func deleteFromLibrary(filename: String) async -> Bool {

@@ -155,8 +155,10 @@ private struct VideoThumbCell: View {
     let onHoldCancel: () -> Void
 
     @State private var image: UIImage?
+    /// Path this cell last requested — drop stale async results (Android tag pattern).
+    @State private var boundPath: String = ""
 
-    /// Fixed title band so 1- vs 2-line labels don’t shove neighbors / overlap.
+    /// Fixed title band so 1- vs 2-line labels don't shove neighbors / overlap.
     private let titleBandHeight: CGFloat = 34
 
     var body: some View {
@@ -218,8 +220,23 @@ private struct VideoThumbCell: View {
             onArmed: onHoldArmed,
             onCancel: onHoldCancel
         )
-        .task {
-            image = await ThumbnailGenerator.generate(for: item.url)
+        .task(id: item.url.path) {
+            let path = item.url.path
+            boundPath = path
+            // Show cache immediately; clear only if miss so scroll doesn't flash gray.
+            if let hit = ThumbnailGenerator.cached(for: item.url) {
+                image = hit
+                return
+            }
+            image = nil
+            let generated = await ThumbnailGenerator.generate(for: item.url)
+            guard !Task.isCancelled else { return }
+            guard boundPath == path else { return }
+            image = generated
+        }
+        .onDisappear {
+            // Allow .task cancellation; drop reference so recycled cells don't keep big bitmaps.
+            image = nil
         }
     }
 }

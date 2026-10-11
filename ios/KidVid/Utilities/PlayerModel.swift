@@ -16,6 +16,9 @@ final class PlayerModel: ObservableObject {
     private var videos: [VideoItem] = []
 
     init() {
+        Self.activatePlaybackAudioSession()
+        player.isMuted = false
+        player.volume = 1.0
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
             queue: .main
@@ -48,6 +51,18 @@ final class PlayerModel: ObservableObject {
         player.replaceCurrentItem(with: nil)
     }
 
+
+    /// Ensure audio plays with Silent switch on (default session is ambient → muted).
+    private static func activatePlaybackAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
+            try session.setActive(true)
+        } catch {
+            NSLog("KidVid: AVAudioSession setup failed: \(error)")
+        }
+    }
+
     func setPlaylist(_ items: [VideoItem], startAt index: Int = 0) {
         videos = items
         guard !items.isEmpty else { return }
@@ -69,11 +84,17 @@ final class PlayerModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 // Loop current video (Android MediaPlayer.setLooping(true))
+                Self.activatePlaybackAudioSession()
+                self?.player.isMuted = false
+                self?.player.volume = 1.0
                 self?.player.seek(to: .zero)
                 self?.player.play()
             }
         }
         isPaused = false
+        Self.activatePlaybackAudioSession()
+        player.isMuted = false
+        player.volume = 1.0
         player.play()
     }
 
@@ -89,6 +110,9 @@ final class PlayerModel: ObservableObject {
 
     func togglePause() {
         if isPaused {
+            Self.activatePlaybackAudioSession()
+            player.isMuted = false
+            player.volume = 1.0
             player.play()
             isPaused = false
         } else {
@@ -104,6 +128,9 @@ final class PlayerModel: ObservableObject {
         let target = max(0, min(current + seconds, duration.isFinite ? duration : current + seconds))
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         if isPaused {
+            Self.activatePlaybackAudioSession()
+            player.isMuted = false
+            player.volume = 1.0
             player.play()
             isPaused = false
         }
