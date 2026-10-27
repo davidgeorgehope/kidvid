@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// Background sync: apply pending deletes, download new videos, ack per-device.
-/// Shared library stays on the server until 7-day age-out — clients never DELETE after download.
+/// Shared library stays on the server permanently (acks filter re-offers) — clients never DELETE after download.
 /// Priority: goldie/dvd/youtube first; internet_archive last. Keep ~5GB free on device.
 @MainActor
 final class SyncService: ObservableObject {

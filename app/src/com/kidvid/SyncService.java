@@ -255,7 +255,7 @@ public class SyncService extends Service {
                 Log.i(TAG, "Downloading: " + name + " (" + (size / 1024 / 1024) + " MB)");
                 boolean downloaded = downloadFile(fullUrl, localFile);
 
-                // After successful download, ack — library stays until 7-day age-out
+                // After successful download, ack — library stays permanently on server
                 if (downloaded) {
                     ackDownload(baseUrl, name, device);
                 }
