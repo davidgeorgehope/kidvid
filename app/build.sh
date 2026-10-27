@@ -89,7 +89,7 @@ find "$GEN" "$SRC" -name "*.java" > "$BIN/sources.txt"
 echo "=== Step 4: Convert to DEX ==="
 "$BT/d8" \
     --lib "$PLATFORM" \
-    --min-api 30 \
+    --min-api 21 \
     --output "$BIN" \
     $(find "$OBJ" -name "*.class")
 

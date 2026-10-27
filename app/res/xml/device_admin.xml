@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <device-admin>
     <uses-policies>
+        <!-- Soft device-admin activation still only needs force-lock. -->
         <force-lock />
+        <!-- Device Owner hard mode uses these via DevicePolicyManager APIs. -->
+        <disable-keyguard-features />
+        <disable-camera />
     </uses-policies>
 </device-admin>

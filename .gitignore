@@ -20,3 +20,7 @@ ios/android-kidvid-export/
 *.ipa
 *.dSYM.zip
 *.dSYM
+app/*.apk
+app/*.idsig
+*.dex
+.DS_Store
