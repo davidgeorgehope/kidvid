@@ -118,6 +118,8 @@ echo $$ >"$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
 # Stage 480p on demand from the single library (KIDVID_SELECT = names file/dir, default all).
+KIDVID_SELECT="${KIDVID_SELECT:-$(cd "$(dirname "$0")/.." && pwd)/lists/${LABEL}.txt}"
+[[ "$KIDVID_SELECT" == all ]] && KIDVID_SELECT=""
 if [[ -z "${KEEP_STAGE:-}" ]]; then
   STAGE_PARENT="$(mktemp -d /tmp/kidvid-stage-${LABEL}.XXXX)"
   trap 'rm -f "$LOCK"; rm -rf "$STAGE_PARENT"' EXIT

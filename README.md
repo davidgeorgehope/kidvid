@@ -217,6 +217,6 @@ MIT — do whatever you want with it.
 ## Phone library (one copy)
 The mini keeps a single master library in `~/Movies/KidVid_720`. 480p copies are never stored:
 `scripts/push-library-to-ios.sh <phone>` calls `scripts/stage-480.sh`, which encodes the selected
-titles (`KIDVID_SELECT=<names file or dir>`, default all) into a temp stage that is deleted after the push.
+titles (`KIDVID_SELECT=<names file or dir>`, default `lists/<phone>.txt`; `KIDVID_SELECT=all` for everything) into a temp stage that is deleted after the push.
 Encodes are cached in `~/Library/Caches/kidvid-480` (keyed by source mtime, capped at 5 GB).
 Android gets videos from `kidvid-server.py` (`~/kidvid-videos`), which does not use the Movies library.
