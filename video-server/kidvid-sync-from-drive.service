@@ -1,0 +1,10 @@
+[Unit]
+Description=Pull KidVid library from Google Drive into the shared library
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/kidvid-server/sync-from-drive.sh
+Nice=10
+# rclone reads /root/.config/rclone; files are chowned to svc-kidvid in the script

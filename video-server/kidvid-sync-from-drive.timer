@@ -1,0 +1,12 @@
+[Unit]
+Description=Pull KidVid library from Google Drive every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=kidvid-sync-from-drive.service
+
+[Install]
+WantedBy=timers.target

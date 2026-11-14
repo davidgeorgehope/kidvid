@@ -93,9 +93,31 @@ Parent PIN delete: local remove + `DELETE /videos/<name>?parent=1` (server tees 
 
 ## Ingest
 
-Push new media as a **single copy** into `$KIDVID_DIR/*.mp4` (shared library). Optional matching `$KIDVID_DIR/<stem>.jpg` thumbs may accompany the mp4; they are only removed with the video (parent DELETE or optional GC).
+The master library is Google Drive (`gdrive:KidVid/720`). Hetzner is the distribution
+point, not the master.
 
-If a hot-fix left per-device subdirs (`phone/`, `pixel/`, `iphone/`, `fire/`) on Hetzner, flatten back to the library root (or hardlink/copy once into the flat dir). DVD-rip / CoS pipelines should target the shared library, not per-device queues.
+1. Copy the `.mp4` (and optional matching `.jpg`) to Drive:
+   `scripts/publish-to-drive.sh /path/to/FILE.mp4`
+   or `rclone copyto FILE.mp4 gdrive:KidVid/720/FILE.mp4`.
+2. Hetzner pulls with `video-server/sync-from-drive.sh` (systemd timer every 15
+   minutes, and immediately after `publish-to-drive.sh`). The script only adds
+   missing top-level `*.mp4` / `*.jpg`. It never deletes and never touches
+   `acks.json`, `deletes.json`, `nox-home.json`, or the legacy `phone/` `fire/`
+   `pixel/` `iphone/` subdirs. Same-name files with a different size are left
+   in place unless `KIDVID_REPLACE=1`.
+
+You can still drop a file straight into `$KIDVID_DIR/*.mp4` as a hot-fix, but also
+copy it to Drive so the master stays complete. Do not use per-device queues going
+forward. Thumbs are only removed with the video (parent DELETE or optional GC).
+
+Install the timer on Hetzner (script must already be at `/root/kidvid-server/sync-from-drive.sh`):
+
+```sh
+cp video-server/kidvid-sync-from-drive.service video-server/kidvid-sync-from-drive.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now kidvid-sync-from-drive.timer
+systemctl start kidvid-sync-from-drive.service   # first pull
+```
 
 ## Quick Start
 

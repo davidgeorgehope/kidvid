@@ -215,8 +215,21 @@ Built for David's daughter Marianne (and Ellie), who have autism and love replay
 MIT — do whatever you want with it.
 
 ## Phone library (one copy)
-The mini keeps a single master library in `~/Movies/KidVid_720`. 480p copies are never stored:
-`scripts/push-library-to-ios.sh <phone>` calls `scripts/stage-480.sh`, which encodes the selected
-titles (`KIDVID_SELECT=<names file or dir>`, default `lists/<phone>.txt`; `KIDVID_SELECT=all` for everything) into a temp stage that is deleted after the push.
-Encodes are cached in `~/Library/Caches/kidvid-480` (keyed by source mtime, capped at 5 GB).
-Android gets videos from `kidvid-server.py` (`~/kidvid-videos`), which does not use the Movies library.
+
+The master library lives on Google Drive at `gdrive:KidVid/720`. Hetzner
+(`files.signal.observer`) is the distribution point: `video-server/sync-from-drive.sh`
+copies new `*.mp4` / `*.jpg` into the shared library (`$KIDVID_DIR`, flat) every 15
+minutes, and ingest scripts call it immediately after a Drive upload.
+
+Ingest (YouTube, DVD rip, or `scripts/publish-to-drive.sh FILE...`) writes to Drive,
+then Hetzner pulls. Do not scp into the legacy `phone/` / `fire/` queues.
+
+`scripts/push-library-to-ios.sh <phone>` still calls `scripts/stage-480.sh` for a
+USB iOS push. 480p copies are never stored as a second library: titles are encoded
+into a temp stage (deleted after the push) and cached in `~/Library/Caches/kidvid-480`
+(keyed by source mtime, capped at 5 GB). If a title is not on the mini,
+`stage-480.sh` fetches it from Drive into `~/Library/Caches/kidvid-720`.
+
+The local Mac mini copy at `~/Movies/KidVid_720` is no longer the master and may be
+absent. The mini's `kidvid-server.py` (`~/kidvid-videos`) is a leftover local server
+and is not the production library.

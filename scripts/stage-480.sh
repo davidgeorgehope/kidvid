@@ -1,25 +1,53 @@
 #!/bin/bash
-# Build a 480p push stage from the single KidVid library (on demand).
+# Build a 480p push stage from the KidVid library (on demand).
 # usage: stage-480.sh STAGE_PARENT [NAMES_FILE_OR_DIR]
 #   NAMES: file with one .mp4 basename per line, or a dir whose *.mp4 names select titles.
 #   Default selection: whole library.
 # Encodes are cached in $CACHE keyed by name+source mtime; cache pruned to $CACHE_MAX_GB.
+#
+# Library lookup order for each title:
+#   1. $KIDVID_LIBRARY (default ~/Movies/KidVid_720) if the file is present
+#   2. otherwise rclone copy from $KIDVID_DRIVE_REMOTE (default gdrive:KidVid/720)
+#      into $KIDVID_720_CACHE (default ~/Library/Caches/kidvid-720)
+# After the mini library is removed, (2) is the normal path.
 set -uo pipefail
 export PATH=/opt/homebrew/bin:/usr/bin:/bin:$PATH
 LIB="${KIDVID_LIBRARY:-$HOME/Movies/KidVid_720}"
+DRIVE="${KIDVID_DRIVE_REMOTE:-gdrive:KidVid/720}"
+FETCH="${KIDVID_720_CACHE:-$HOME/Library/Caches/kidvid-720}"
 CACHE="${KIDVID_480_CACHE:-$HOME/Library/Caches/kidvid-480}"
 CACHE_MAX_GB="${CACHE_MAX_GB:-5}"
 STAGE_PARENT="${1:?stage dir}"; SEL="${2:-}"
 OUT="$STAGE_PARENT/kidvid/videos"; mkdir -p "$OUT" "$CACHE"
+
 names() {
-  if [[ -z "$SEL" ]]; then (cd "$LIB" && ls *.mp4)
-  elif [[ -d "$SEL" ]]; then (cd "$SEL" && ls *.mp4)
-  else grep -v '^\s*$' "$SEL"; fi
+  if [[ -n "$SEL" && -d "$SEL" ]]; then (cd "$SEL" && ls *.mp4)
+  elif [[ -n "$SEL" ]]; then grep -v '^\s*$' "$SEL"
+  elif [[ -d "$LIB" ]]; then (cd "$LIB" && ls *.mp4)
+  else
+    # Drive is the master when the local folder is gone
+    rclone lsf --include "*.mp4" "$DRIVE"
+  fi
 }
+
+resolve_src() {
+  local n="$1"
+  if [[ -f "$LIB/$n" ]]; then
+    echo "$LIB/$n"
+    return 0
+  fi
+  mkdir -p "$FETCH"
+  if [[ ! -s "$FETCH/$n" ]]; then
+    rclone copyto "$DRIVE/$n" "$FETCH/$n" || return 1
+  fi
+  [[ -s "$FETCH/$n" ]] || return 1
+  echo "$FETCH/$n"
+}
+
 rc=0
 while IFS= read -r n; do
-  src="$LIB/$n"
-  [[ -f "$src" ]] || { echo "MISSING $n" >&2; rc=1; continue; }
+  [[ -z "$n" ]] && continue
+  src=$(resolve_src "$n") || { echo "MISSING $n" >&2; rc=1; continue; }
   key="$CACHE/$(stat -f%m "$src")_$n"
   if [[ ! -s "$key" ]]; then
     tmp="$CACHE/.tmp.$$.$n"
