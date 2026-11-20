@@ -233,3 +233,14 @@ into a temp stage (deleted after the push) and cached in `~/Library/Caches/kidvi
 The local Mac mini copy at `~/Movies/KidVid_720` is no longer the master and may be
 absent. The mini's `kidvid-server.py` (`~/kidvid-videos`) is a leftover local server
 and is not the production library.
+
+## Mac mini USB/adb device-watcher (disabled Nov 20, 2026)
+
+The Mac mini LaunchAgent `com.kidvid.device-watcher` (ran `scripts/device-watcher.sh`,
+polling `adb devices` every 8s to push APKs to known Android devices on USB attach)
+is disabled. The Pixel is rooted and gets the library over the network now, so the
+watcher was redundant, and its always-running `adb` server was showing up in the
+mini's shutdown-stall reports.
+
+- Plist moved (not deleted) to `~/Library/LaunchAgents/disabled/com.kidvid.device-watcher.plist`.
+- Re-enable: `mv ~/Library/LaunchAgents/disabled/com.kidvid.device-watcher.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kidvid.device-watcher.plist`
