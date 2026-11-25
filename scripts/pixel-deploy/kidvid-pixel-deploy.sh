@@ -232,13 +232,62 @@ SHELLC() {
     run_timeout "${1:-20}" "$ADB" -s "$SERIAL" shell "${@:2}"
 }
 
+# True when the default panel is on. Android 15 still prints Display State=
+# on this Pixel, but is_idle also documents mState= / mWakefulness; treat
+# any of those as on so a missed Display State= parse cannot flip the power
+# key the wrong way.
+display_is_on() {
+    local display power
+    display=$(SHELLC 15 dumpsys display 2>/dev/null || true)
+    power=$(SHELLC 15 dumpsys power 2>/dev/null || true)
+    if printf '%s\n' "$display" | grep -qE '^[[:space:]]*Display State=ON'; then
+        return 0
+    fi
+    if printf '%s\n' "$power" | grep -qE 'mWakefulness=Awake'; then
+        return 0
+    fi
+    if printf '%s\n' "$display" | grep -qE '^[[:space:]]*mState=ON'; then
+        return 0
+    fi
+    if printf '%s\n' "$power" | grep -qE 'mScreenState=ON'; then
+        return 0
+    fi
+    return 1
+}
+
+# Live window dump only (`dumpsys window windows`). Full `dumpsys window`
+# prints LAST ANR first, so head -1 can score a stale focus/keyguard.
+read_focus_keyguard() {
+    win=$(SHELLC 20 dumpsys window windows 2>/dev/null || true)
+    kg=$(printf '%s\n' "$win" | sed -n 's/.*mKeyguardShowing=\([a-z]*\).*/\1/p' | tail -1)
+    if [ -z "${kg:-}" ]; then
+        kg=$(printf '%s\n' "$win" | sed -n 's/.*isKeyguardShowing=\([a-z]*\).*/\1/p' | tail -1)
+    fi
+    focus=$(printf '%s\n' "$win" | sed -n 's/.*mCurrentFocus=Window{[^}]* \([^}]*\)}.*/\1/p' | tail -1)
+}
+
+# Never use `am task lock` — that is screen pinning (PINNED), which makes
+# the app's pinScreen() return early and never reach Device Owner LOCKED.
+ensure_lock_task() {
+    local state
+    state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
+    if [ "$state" = "LOCKED" ]; then
+        return 0
+    fi
+    SHELLC 20 am force-stop com.kidvid >/dev/null 2>&1 || true
+    sleep 1
+    SHELLC 30 am start -W -n com.kidvid/.MainActivity -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1 || true
+    sleep 2
+    state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
+    [ "$state" = "LOCKED" ]
+}
+
 # After adb install -r: disable keyguard, make KidVid HOME, start it,
 # re-enter lock task, and fail if a screen off/on cycle shows keyguard.
 relaunch_kiosk() {
-    local out state task home was_awake disp win kg focus
+    local out state home was_awake disp win kg focus i
     was_awake=0
-    disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
-    [ "$disp" = "ON" ] && was_awake=1
+    display_is_on && was_awake=1
 
     run_timeout 20 "$ADB" -s "$SERIAL" shell su -c "locksettings set-disabled true" >/dev/null 2>&1 || true
     run_timeout 20 "$ADB" -s "$SERIAL" shell cmd package set-home-activity com.kidvid/.MainActivity >/dev/null 2>&1 || true
@@ -249,20 +298,16 @@ relaunch_kiosk() {
     out=$(SHELLC 30 am start -W -n com.kidvid/.MainActivity -a android.intent.action.MAIN -c android.intent.category.HOME 2>&1) || true
     log "kiosk start: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-240)"
     sleep 2
-    state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
-    if [ "$state" != "LOCKED" ]; then
-        task=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*Task{[^ ]* #\([0-9][0-9]*\) type=standard A=[0-9]*:com.kidvid.*/\1/p' | head -1)
-        if [ -n "$task" ]; then
-            SHELLC 15 am task lock "$task" >/dev/null 2>&1 || true
-            sleep 1
+    if ! ensure_lock_task; then
+        # One more try; still no am task lock.
+        if ! ensure_lock_task; then
             state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
+            home=$(SHELLC 15 cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | tail -1)
+            log "kiosk lock=${state:-?} home=$(printf '%s' "$home" | tr '\n' ' ')"
+            return 1
         fi
     fi
-    if [ "$state" != "LOCKED" ]; then
-        SHELLC 30 am start -n com.kidvid/.MainActivity >/dev/null 2>&1 || true
-        sleep 2
-        state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
-    fi
+    state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
     home=$(SHELLC 15 cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | tail -1)
     log "kiosk lock=$state home=$(printf '%s' "$home" | tr '\n' ' ')"
     if [ "$state" != "LOCKED" ]; then
@@ -270,42 +315,37 @@ relaunch_kiosk() {
     fi
 
     # Regression check: cycle screen OFF -> ON and ensure KidVid is focused
-    # with no keyguard. Wait until Display State=ON; a 2s sleep is too short
-    # and can catch the transient NotificationShade after wake.
+    # with no keyguard. Wait until the display is actually on; a 2s sleep is
+    # too short and can catch the transient NotificationShade after wake.
     cycle_and_read() {
-        disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
-        if [ "$disp" = "ON" ]; then
+        if display_is_on; then
             SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
             sleep 3
         fi
         SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
-        local i
         for i in 1 2 3 4 5 6 7 8; do
             sleep 1
-            disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
-            [ "$disp" = "ON" ] && break
+            display_is_on && break
         done
         sleep 2
-        win=$(SHELLC 20 dumpsys window 2>/dev/null || true)
-        kg=$(printf '%s\n' "$win" | sed -n 's/.*isKeyguardShowing=\([a-z]*\).*/\1/p' | head -1)
-        focus=$(printf '%s\n' "$win" | sed -n 's/.*mCurrentFocus=Window{[^}]* \([^}]*\)}.*/\1/p' | head -1)
+        read_focus_keyguard
+        state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
     }
     cycle_and_read
-    log "kiosk screen-cycle keyguard=${kg:-?} focus=${focus:-?}"
-    if [ "$kg" = "true" ] || ! printf '%s' "${focus:-}" | grep -q "com.kidvid"; then
+    log "kiosk screen-cycle keyguard=${kg:-?} focus=${focus:-?} lock=${state:-?}"
+    if [ "$kg" = "true" ] || ! printf '%s' "${focus:-}" | grep -q "com.kidvid" || [ "$state" != "LOCKED" ]; then
         # Re-apply policy and retry once; package replace can drop DPM keyguard disable.
         run_timeout 20 "$ADB" -s "$SERIAL" shell su -c "locksettings set-disabled true" >/dev/null 2>&1 || true
-        SHELLC 20 am force-stop com.kidvid >/dev/null 2>&1 || true
-        sleep 1
-        SHELLC 30 am start -W -n com.kidvid/.MainActivity -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1 || true
-        sleep 2
+        if ! ensure_lock_task; then
+            log "kiosk screen-cycle retry failed to re-enter LOCKED"
+        fi
         cycle_and_read
-        log "kiosk screen-cycle retry keyguard=${kg:-?} focus=${focus:-?}"
+        log "kiosk screen-cycle retry keyguard=${kg:-?} focus=${focus:-?} lock=${state:-?}"
     fi
     if [ "$was_awake" = "0" ]; then
         SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
     fi
-    if [ "$kg" = "true" ] || ! printf '%s' "${focus:-}" | grep -q "com.kidvid"; then
+    if [ "$kg" = "true" ] || ! printf '%s' "${focus:-}" | grep -q "com.kidvid" || [ "$state" != "LOCKED" ]; then
         return 1
     fi
     return 0
@@ -425,14 +465,6 @@ if [ "$SKIP_INSTALL" = "0" ]; then
         finish_fail 3 "adb install failed: $(printf '%s' "$INST_OUT" | tr '\n' ' ' | cut -c1-400)"
     fi
     log "install ok"
-    # install -r kills the running process and ends the lock-task session.
-    # BootReceiver only runs at BOOT_COMPLETED, and the HOME role can fall
-    # back to Nexus Launcher after a package replace, so screen-on would
-    # show the Pixel launcher instead of KidVid. Restore HOME, start the
-    # app, and re-enter lock task before we leave the phone idle-but-unlocked.
-    if ! relaunch_kiosk; then
-        finish_fail 7 "apk installed but failed to relaunch KidVid into lock task"
-    fi
 fi
 
 # Update Magisk module files (policy + service). Keylayouts unchanged.
@@ -440,6 +472,13 @@ fi
 # Do not pass a multi-line script to `adb shell su -c` — Magisk su then
 # sees `su -c` with no argument, the copies run unprivileged, and the
 # module stays at the old hardcoded 25/12 service.sh.
+#
+# The copy script only copies and prints OK. Starting the infinite
+# service.sh loop in the same su session can hold stdin and keep adb
+# open until run_timeout discards stdout, so a successful copy looks
+# like a failure and finish_fail 6 disarms the job. Start the daemon
+# in a separate, stdin-closed session after OK is observed.
+MAGISK_OK=0
 MOD_SRC="$REPO/magisk/kidvid_lock"
 if [ -f "$MOD_SRC/service.sh" ] && [ -f "$MOD_SRC/volume_policy.sh" ]; then
     run_timeout 30 "$ADB" -s "$SERIAL" push "$MOD_SRC/service.sh" /data/local/tmp/kidvid_service.sh >/dev/null
@@ -454,21 +493,36 @@ cp /data/local/tmp/kidvid_volume_policy.sh /data/adb/modules/kidvid_lock/volume_
 cp /data/local/tmp/kidvid_module.prop /data/adb/modules/kidvid_lock/module.prop
 chmod 755 /data/adb/modules/kidvid_lock/service.sh
 chmod 644 /data/adb/modules/kidvid_lock/volume_policy.sh /data/adb/modules/kidvid_lock/module.prop
-pkill -f /data/adb/modules/kidvid_lock/service.sh || true
-sleep 1
-sh /data/adb/modules/kidvid_lock/service.sh >/dev/null 2>&1 &
 echo OK
 EOF
     run_timeout 30 "$ADB" -s "$SERIAL" push "$STATE/install-kidvid-lock.sh" /data/local/tmp/install-kidvid-lock.sh >/dev/null
     LOCK_OUT=$(run_timeout 25 "$ADB" -s "$SERIAL" shell su -c "sh /data/local/tmp/install-kidvid-lock.sh") || true
     if printf '%s\n' "$LOCK_OUT" | grep -q "OK"; then
+        # Detached start; a hang here must not hide the successful copy.
+        run_timeout 8 "$ADB" -s "$SERIAL" shell su -c "sh -c 'pkill -f /data/adb/modules/kidvid_lock/service.sh || true; sleep 1; sh /data/adb/modules/kidvid_lock/service.sh </dev/null >/dev/null 2>&1 &'" >/dev/null 2>&1 || true
         log "magisk kidvid_lock service updated and restarted"
+        MAGISK_OK=1
     else
         log "magisk kidvid_lock update failed: $(printf '%s' "$LOCK_OUT" | tr '\n' ' ' | cut -c1-300)"
-        finish_fail 6 "magisk module copy failed (su). apk may already be installed; module not updated"
     fi
 else
     log "magisk sources missing under $MOD_SRC"
+fi
+
+# install -r kills the running process and ends the lock-task session.
+# BootReceiver only runs at BOOT_COMPLETED, and the HOME role can fall
+# back to Nexus Launcher after a package replace, so screen-on would
+# show the Pixel launcher instead of KidVid. Restore HOME, start the
+# app, and re-enter lock task after Magisk so a failed keyguard check
+# cannot skip the module update.
+if [ "$SKIP_INSTALL" = "0" ]; then
+    if ! relaunch_kiosk; then
+        finish_fail 7 "apk installed but failed to relaunch KidVid into lock task"
+    fi
+fi
+
+if [ -f "$MOD_SRC/service.sh" ] && [ -f "$MOD_SRC/volume_policy.sh" ] && [ "$MAGISK_OK" != "1" ]; then
+    finish_fail 6 "magisk module copy failed (su). apk may already be installed; module not updated"
 fi
 
 # Verify installed version

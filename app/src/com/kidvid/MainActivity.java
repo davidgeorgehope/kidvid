@@ -264,7 +264,17 @@ public class MainActivity extends Activity {
         try {
             ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
             if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                if (am.getLockTaskModeState() != ActivityManager.LOCK_TASK_MODE_NONE) return;
+                int lockState = am.getLockTaskModeState();
+                if (lockState == ActivityManager.LOCK_TASK_MODE_LOCKED) return;
+                // am task lock / screen pinning is PINNED, not Device Owner
+                // LOCKED. Leaving PINNED would skip startLockTask forever.
+                if (lockState == ActivityManager.LOCK_TASK_MODE_PINNED && deviceOwnerMode) {
+                    try {
+                        stopLockTask();
+                    } catch (Exception ignored) {}
+                } else if (lockState != ActivityManager.LOCK_TASK_MODE_NONE) {
+                    return;
+                }
             }
             startLockTask();
         } catch (Exception e) {
@@ -461,6 +471,7 @@ public class MainActivity extends Activity {
                         MainActivity.this,
                         PARENT_DELETE_PIN,
                         current,
+                        volumeController,
                         new VolumeSettingsUi.PolicySavedListener() {
                             @Override
                             public void onPolicySaved(VolumePolicy updated) {
@@ -701,6 +712,7 @@ public class MainActivity extends Activity {
                 deleteHoldTriggered = false;
             }
         });
+        VolumeSettingsUi.attachVolumeKeys(dialog, volumeController);
         dialog.show();
     }
 

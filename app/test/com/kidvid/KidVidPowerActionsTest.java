@@ -2,6 +2,10 @@ package com.kidvid;
 
 import org.junit.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -97,5 +101,62 @@ public class KidVidPowerActionsTest {
     public void nullHostIsRejected() {
         assertFalse(PowerActions.restart(null));
         assertFalse(PowerActions.powerOff(null));
+    }
+    private static final class FakeProcess extends Process {
+        private final ByteArrayOutputStream stdin = new ByteArrayOutputStream();
+        private final Integer exitCode; // null = still running
+
+        FakeProcess(Integer exitCode) {
+            this.exitCode = exitCode;
+        }
+
+        @Override
+        public OutputStream getOutputStream() {
+            return stdin;
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return new ByteArrayInputStream(new byte[0]);
+        }
+
+        @Override
+        public InputStream getErrorStream() {
+            return new ByteArrayInputStream(new byte[0]);
+        }
+
+        @Override
+        public int waitFor() {
+            if (exitCode == null) {
+                throw new IllegalStateException("still running");
+            }
+            return exitCode.intValue();
+        }
+
+        @Override
+        public int exitValue() {
+            if (exitCode == null) {
+                throw new IllegalThreadStateException("still running");
+            }
+            return exitCode.intValue();
+        }
+
+        @Override
+        public void destroy() {}
+    }
+
+    @Test
+    public void rootProcessAcceptedRequiresExitZero() {
+        assertFalse(PowerActions.rootProcessAccepted(null, 50));
+        assertTrue(PowerActions.rootProcessAccepted(new FakeProcess(Integer.valueOf(0)), 50));
+        assertFalse(PowerActions.rootProcessAccepted(new FakeProcess(Integer.valueOf(1)), 50));
+        assertFalse(PowerActions.rootProcessAccepted(new FakeProcess(Integer.valueOf(13)), 50));
+    }
+
+    @Test
+    public void rootProcessStillRunningCountsAsAccepted() {
+        // reboot -p / reboot will not return; treat a live process as success
+        // so we do not immediately fall through to a second command.
+        assertTrue(PowerActions.rootProcessAccepted(new FakeProcess(null), 30));
     }
 }
