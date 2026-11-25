@@ -2,15 +2,16 @@ package com.kidvid;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.ActivityManager;
 import android.app.admin.DevicePolicyManager;
+import android.content.IntentFilter;
+import android.app.ActivityManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.database.ContentObserver;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.media.AudioManager;
 import android.media.MediaMetadataRetriever;
@@ -23,7 +24,6 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.InputType;
-import android.os.PowerManager;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -32,7 +32,6 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
-import android.view.WindowManager;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.AbsListView;
@@ -96,6 +95,20 @@ public class MainActivity extends Activity {
 
     // Thumbnail cache
     private Map<String, Bitmap> thumbnailCache = new HashMap<>();
+
+    // Soft mode (no Device Owner): screen-pin + sticky bring-to-front.
+    private static final long STICKY_RETURN_DELAY_MS = 400;
+    private boolean deviceOwnerMode = false;
+    private boolean parentExitRequested = false;
+    private final Handler stickyHandler = new Handler(Looper.getMainLooper());
+    private final Runnable stickyReturnRunnable = new Runnable() {
+        @Override public void run() {
+            if (parentExitRequested || isFinishing()) return;
+            bringKidVidToFront();
+            pinScreen();
+        }
+    };
+
     private ExecutorService thumbExecutor = Executors.newFixedThreadPool(2);
 
     // Browse button
@@ -139,34 +152,6 @@ public class MainActivity extends Activity {
     private int deleteHoldSlopSq;
     private boolean deleteHoldMoved;
     private Toast deleteHoldProgressToast;
-    // --- Lockdown / parent exit ---
-    // Soft mode (no Device Owner): screen-pin + sticky bring-to-front.
-    // Hard mode (Device Owner): full lock-task policies + preferred HOME.
-    private boolean parentExitRequested = false;
-    private boolean deviceOwnerMode = false;
-    private final Handler stickyHandler = new Handler(Looper.getMainLooper());
-    private static final long STICKY_RETURN_DELAY_MS = 250;
-    private static final int PARENT_EXIT_TAPS = 7;
-    private static final long PARENT_EXIT_WINDOW_MS = 2500;
-    private static final float PARENT_EXIT_CORNER_FRACTION = 0.18f;
-    private int parentExitTapCount = 0;
-    private long parentExitWindowStart = 0;
-    private final Runnable stickyReturnRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (parentExitRequested || isFinishing()) return;
-            // Don't fight a screen-off pause; resume + pin when the display wakes.
-            try {
-                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-                if (pm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH
-                        && !pm.isInteractive()) {
-                    return;
-                }
-            } catch (Exception ignored) {}
-            bringKidVidToFront();
-            pinScreen();
-        }
-    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -175,7 +160,6 @@ public class MainActivity extends Activity {
 
         videoView = findViewById(R.id.videoView);
         rootLayout = (FrameLayout) videoView.getParent();
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemUI();
         enableLockTask();
         addBrowseButton();
@@ -203,21 +187,14 @@ public class MainActivity extends Activity {
 
             @Override
             public void onLongPress(MotionEvent e) {
-                // Long press in top-left corner = parent exit (deliberate).
-                // Elsewhere = rewind 10 seconds (existing kid gesture).
-                if (e != null && isInParentExitCorner(e.getRawX(), e.getRawY())) {
-                    requestParentExit();
-                    return;
-                }
+                // Long press = rewind 10 seconds
                 seekRelative(-10000);
             }
         });
 
         initVolumeControl();
 
-        if (Build.VERSION.SDK_INT >= 23
-                && checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
-                    != PackageManager.PERMISSION_GRANTED) {
+        if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, PERM_REQUEST);
         } else {
             loadAndPlay();
@@ -230,43 +207,28 @@ public class MainActivity extends Activity {
         deleteHoldSlopSq = (slop * 3) * (slop * 3);
     }
 
+
     /**
-     * Soft pin always; Device Owner hardens lock-task features when available.
-     * Fire tablets often cannot set Device Owner without a factory reset — soft
-     * mode + sticky return is the default path that still works.
+     * Soft pin always; Device Owner hardens lock-task when available.
+     * Fire cannot set Device Owner without wipe — soft pin is the default.
      */
     private void enableLockTask() {
-        DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
-        ComponentName admin = new ComponentName(this, KidVidDeviceAdmin.class);
-        deviceOwnerMode = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
-
-        if (deviceOwnerMode) {
-            try {
-                dpm.setLockTaskPackages(admin, new String[]{getPackageName()});
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    // Hide Home / Recents / notifications while locked in.
-                    dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE);
-                }
+        try {
+            DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+            ComponentName admin = new ComponentName(this, KidVidDeviceAdmin.class);
+            deviceOwnerMode = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
+            if (deviceOwnerMode) {
                 try {
-                    dpm.setKeyguardDisabled(admin, true);
+                    dpm.setLockTaskPackages(admin, new String[]{getPackageName(), "com.topjohnwu.magisk"});
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE);
+                    }
                 } catch (Exception ignored) {}
-                try {
-                    dpm.setStatusBarDisabled(admin, true);
-                } catch (Exception ignored) {}
-                // Prefer KidVid as HOME so Amazon launcher is less sticky.
-                try {
-                    IntentFilter homeFilter = new IntentFilter(Intent.ACTION_MAIN);
-                    homeFilter.addCategory(Intent.CATEGORY_HOME);
-                    homeFilter.addCategory(Intent.CATEGORY_DEFAULT);
-                    dpm.addPersistentPreferredActivity(admin, homeFilter,
-                        new ComponentName(this, MainActivity.class));
-                } catch (Exception ignored) {}
-            } catch (Exception e) {
-                // Device owner APIs can still fail on quirky Fire builds.
             }
+            pinScreen();
+        } catch (Exception e) {
+            // ignore
         }
-
-        pinScreen();
     }
 
     private void pinScreen() {
@@ -274,21 +236,12 @@ public class MainActivity extends Activity {
         try {
             ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
             if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                int state = am.getLockTaskModeState();
-                if (state != ActivityManager.LOCK_TASK_MODE_NONE) {
-                    return;
-                }
+                if (am.getLockTaskModeState() != ActivityManager.LOCK_TASK_MODE_NONE) return;
             }
             startLockTask();
         } catch (Exception e) {
-            // Soft pin may need a one-time confirm dialog on first use.
+            // First soft-pin may show a confirm dialog on some Fire builds.
         }
-    }
-
-    private void scheduleStickyReturn() {
-        if (parentExitRequested || isFinishing()) return;
-        stickyHandler.removeCallbacks(stickyReturnRunnable);
-        stickyHandler.postDelayed(stickyReturnRunnable, STICKY_RETURN_DELAY_MS);
     }
 
     private void bringKidVidToFront() {
@@ -302,43 +255,12 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    private boolean isInParentExitCorner(float rawX, float rawY) {
-        int w = getResources().getDisplayMetrics().widthPixels;
-        int h = getResources().getDisplayMetrics().heightPixels;
-        float cornerW = w * PARENT_EXIT_CORNER_FRACTION;
-        float cornerH = h * PARENT_EXIT_CORNER_FRACTION;
-        // Top-left: avoids seek bar (bottom) and browse button (top-right).
-        return rawX <= cornerW && rawY <= cornerH;
-    }
-
-    private void noteParentExitTap(float rawX, float rawY) {
-        if (!isInParentExitCorner(rawX, rawY)) {
-            parentExitTapCount = 0;
-            return;
-        }
-        long now = System.currentTimeMillis();
-        if (now - parentExitWindowStart > PARENT_EXIT_WINDOW_MS) {
-            parentExitTapCount = 0;
-            parentExitWindowStart = now;
-        }
-        parentExitTapCount++;
-        if (parentExitTapCount >= PARENT_EXIT_TAPS) {
-            parentExitTapCount = 0;
-            requestParentExit();
-        }
-    }
-
-    /** Deliberate parent exit: unpin, stop sticky return, leave the app. */
-    private void requestParentExit() {
-        if (parentExitRequested) return;
-        parentExitRequested = true;
+    private void scheduleStickyReturn() {
+        if (parentExitRequested || isFinishing()) return;
         stickyHandler.removeCallbacks(stickyReturnRunnable);
-        try {
-            stopLockTask();
-        } catch (Exception ignored) {}
-        Toast.makeText(this, "Parent exit", Toast.LENGTH_SHORT).show();
-        finish();
+        stickyHandler.postDelayed(stickyReturnRunnable, STICKY_RETURN_DELAY_MS);
     }
+
 
     // --- Seek Bar ---
 
@@ -839,14 +761,14 @@ public class MainActivity extends Activity {
                 cell.setPadding(8, 8, 8, 8);
 
                 thumb = new ImageView(MainActivity.this);
-                thumb.setTag("thumb");
+                // Do NOT use string tags for view identity — ImageView.setTag(path) is
+                // reserved for async recycle checks (was NPE: findViewWithTag("thumb") null).
                 thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 int thumbHeight = (int)(getResources().getDisplayMetrics().widthPixels / 2.5);
                 cell.addView(thumb, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, thumbHeight));
 
                 label = new TextView(MainActivity.this);
-                label.setTag("label");
                 label.setTextColor(Color.WHITE);
                 label.setTextSize(12);
                 label.setGravity(Gravity.CENTER);
@@ -856,8 +778,14 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             } else {
                 cell = (LinearLayout) convertView;
-                thumb = (ImageView) cell.findViewWithTag("thumb");
-                label = (TextView) cell.findViewWithTag("label");
+                // Child 0 = ImageView, child 1 = TextView (creation order above)
+                thumb = (ImageView) cell.getChildAt(0);
+                label = (TextView) cell.getChildAt(1);
+            }
+            if (thumb == null || label == null) {
+                // Defensive: never crash the grid if structure unexpected
+                if (convertView != null) return convertView;
+                return new LinearLayout(MainActivity.this);
             }
 
             String path = videoFiles.get(position);
@@ -917,32 +845,59 @@ public class MainActivity extends Activity {
                 }
             });
 
+            // Clear recycled cell so a prior Goldie frame never sticks on Splash.
+            // Tag holds bound path for async callback validity (not view identity).
+            thumb.setImageDrawable(null);
+            thumb.setBackgroundColor(Color.DKGRAY);
+            thumb.setTag(path);
+
             if (thumbnailCache.containsKey(path)) {
                 Bitmap bmp = thumbnailCache.get(path);
-                if (bmp != null) thumb.setImageBitmap(bmp);
-                else thumb.setBackgroundColor(Color.DKGRAY);
+                if (bmp != null) {
+                    thumb.setImageBitmap(bmp);
+                    thumb.setBackgroundColor(Color.TRANSPARENT);
+                }
             } else {
-                thumb.setBackgroundColor(Color.DKGRAY);
                 final ImageView thumbRef = thumb;
                 final String thumbPath = path;
                 thumbExecutor.execute(new Runnable() {
                     @Override
                     public void run() {
+                        Bitmap bmp = null;
                         try {
-                            MediaMetadataRetriever mmr = new MediaMetadataRetriever();
-                            mmr.setDataSource(thumbPath);
-                            final Bitmap bmp = mmr.getFrameAtTime(5000000);
-                            mmr.release();
-                            thumbnailCache.put(thumbPath, bmp);
-                            runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (bmp != null) thumbRef.setImageBitmap(bmp);
-                                }
-                            });
+                            // Prefer server/client sidecar stem.jpg when present
+                            String stemJpg = thumbPath;
+                            int dot = thumbPath.lastIndexOf('.');
+                            if (dot > 0) stemJpg = thumbPath.substring(0, dot) + ".jpg";
+                            File jpg = new File(stemJpg);
+                            if (jpg.isFile() && jpg.length() > 0) {
+                                bmp = BitmapFactory.decodeFile(jpg.getAbsolutePath());
+                            }
+                            if (bmp == null) {
+                                MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+                                mmr.setDataSource(thumbPath);
+                                bmp = mmr.getFrameAtTime(5000000);
+                                mmr.release();
+                            }
                         } catch (Exception e) {
-                            thumbnailCache.put(thumbPath, null);
+                            bmp = null;
                         }
+                        thumbnailCache.put(thumbPath, bmp);
+                        final Bitmap out = bmp;
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Object tag = thumbRef.getTag();
+                                if (tag == null || !thumbPath.equals(tag)) return;
+                                if (out != null) {
+                                    thumbRef.setImageBitmap(out);
+                                    thumbRef.setBackgroundColor(Color.TRANSPARENT);
+                                } else {
+                                    thumbRef.setImageDrawable(null);
+                                    thumbRef.setBackgroundColor(Color.DKGRAY);
+                                }
+                            }
+                        });
                     }
                 });
             }
@@ -1036,15 +991,8 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
-        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            noteParentExitTap(event.getRawX(), event.getRawY());
-        }
         if (browserVisible) {
             return super.dispatchTouchEvent(event);
-        }
-        // Parent-exit corner must reach the gesture detector (not seek/browse).
-        if (isInParentExitCorner(event.getRawX(), event.getRawY())) {
-            return onTouchEvent(event);
         }
         // Let the button and seekbar handle their own touches
         if (browseButton != null && browseButton.getVisibility() == View.VISIBLE) {
@@ -1076,11 +1024,6 @@ public class MainActivity extends Activity {
         if (browserVisible) {
             hideBrowser();
             return;
-        }
-        // Swallow Back so kids cannot casually leave. Parents use corner exit.
-        if (!parentExitRequested) {
-            pinScreen();
-            hideSystemUI();
         }
     }
 
@@ -1128,15 +1071,43 @@ public class MainActivity extends Activity {
         Map<String, String> titleMap = new HashMap<>();
         List<String> videoDirs = new ArrayList<>();
 
-        // Collect all video directories
+        // Prefer app dirs (getFilesDir + ALL getExternalFilesDirs) — adoptable SD has most free space
+        java.util.LinkedHashSet<String> preferred = new java.util.LinkedHashSet<>();
+        File filesVids = new File(getFilesDir(), "videos");
+        if (filesVids.isDirectory() || filesVids.mkdirs()) {
+            preferred.add(filesVids.getAbsolutePath());
+        }
+        File[] extRoots = getExternalFilesDirs(null);
+        if (extRoots != null) {
+            // Sort by free space descending so SD (huge) is scanned/played first
+            java.util.Arrays.sort(extRoots, new java.util.Comparator<File>() {
+                public int compare(File a, File b) {
+                    long fa = (a == null) ? -1 : a.getUsableSpace();
+                    long fb = (b == null) ? -1 : b.getUsableSpace();
+                    return Long.compare(fb, fa);
+                }
+            });
+            for (File root : extRoots) {
+                if (root == null) continue;
+                File v = new File(root, "videos");
+                if (v.isDirectory() || v.mkdirs()) preferred.add(v.getAbsolutePath());
+            }
+        }
+        for (String p : preferred) {
+            if (!videoDirs.contains(p)) videoDirs.add(p);
+        }
+
+        // Legacy paths (may still hold pre-migration library)
         for (String sdPath : SD_PATHS) {
             File sdVids = new File(sdPath + "videos/");
             if (sdVids.exists() && sdVids.isDirectory()) {
-                videoDirs.add(sdVids.getAbsolutePath());
-                loadManifestTitles(new File(sdPath + "manifest.json"), titleMap);
+                String path = sdVids.getAbsolutePath();
+                if (!videoDirs.contains(path)) {
+                    videoDirs.add(path);
+                    loadManifestTitles(new File(sdPath + "manifest.json"), titleMap);
+                }
             }
         }
-        // Scan /storage/ for additional mounts
         File storage = new File("/storage/");
         if (storage.exists()) {
             File[] mounts = storage.listFiles();
@@ -1152,17 +1123,11 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        // Always include internal storage
         File internalVids = new File(VIDEOS_DIR);
-        if (internalVids.exists() && internalVids.isDirectory() && !videoDirs.contains(internalVids.getAbsolutePath())) {
+        if (internalVids.exists() && internalVids.isDirectory()
+                && !videoDirs.contains(internalVids.getAbsolutePath())) {
             videoDirs.add(internalVids.getAbsolutePath());
             loadManifestTitles(new File(MANIFEST_FILE), titleMap);
-        }
-
-        // Also scan app-specific external storage (where SyncService downloads to)
-        File appExtVids = new File(getExternalFilesDir(null), "videos");
-        if (appExtVids.exists() && appExtVids.isDirectory() && !videoDirs.contains(appExtVids.getAbsolutePath())) {
-            videoDirs.add(appExtVids.getAbsolutePath());
         }
 
         // Scan all directories for video files
@@ -1188,8 +1153,31 @@ public class MainActivity extends Activity {
             }
         }
 
-        // Update activeVideosDir to first directory that has videos
-        if (!videoDirs.isEmpty()) {
+        // Prefer dir with most free space that has videos (SD after migration)
+        String bestActive = null;
+        long bestFree = -1;
+        for (String dirPath : videoDirs) {
+            File d = new File(dirPath);
+            File[] fs = d.listFiles();
+            boolean hasVid = false;
+            if (fs != null) {
+                for (File f : fs) {
+                    String n = f.getName().toLowerCase();
+                    if (n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".webm") || n.endsWith(".3gp")) {
+                        hasVid = true; break;
+                    }
+                }
+            }
+            if (!hasVid) continue;
+            long free = d.getUsableSpace();
+            if (free > bestFree) {
+                bestFree = free;
+                bestActive = dirPath.endsWith("/") ? dirPath : dirPath + "/";
+            }
+        }
+        if (bestActive != null) {
+            activeVideosDir = bestActive;
+        } else if (!videoDirs.isEmpty()) {
             activeVideosDir = videoDirs.get(0) + "/";
         }
     }
@@ -1238,23 +1226,28 @@ public class MainActivity extends Activity {
     }
 
     private void hideSystemUI() {
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            getWindow().setDecorFitsSystemWindows(false);
-            WindowInsetsController controller = getWindow().getInsetsController();
-            if (controller != null) {
-                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
-                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        // Fire OS / API 28: never call R+ Window APIs (NoSuchMethodError even if
+        // VERSION_CODES.R constant compares oddly on some firmwares).
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                getWindow().setDecorFitsSystemWindows(false);
+                WindowInsetsController controller = getWindow().getInsetsController();
+                if (controller != null) {
+                    controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                    controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                }
+                return;
             }
-        } else {
-            getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                | View.SYSTEM_UI_FLAG_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        } catch (Throwable t) {
+            // fall through to legacy flags
         }
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            | View.SYSTEM_UI_FLAG_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
     }
 
     @Override
@@ -1262,28 +1255,16 @@ public class MainActivity extends Activity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             hideSystemUI();
-            if (!parentExitRequested) pinScreen();
-        } else if (!parentExitRequested) {
+            pinScreen();
+        } else {
+            // Soft-pin can be dismissed on Fire; yank KidVid back.
             scheduleStickyReturn();
         }
     }
 
     @Override
-    protected void onUserLeaveHint() {
-        super.onUserLeaveHint();
-        scheduleStickyReturn();
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        scheduleStickyReturn();
-    }
-
-    @Override
     protected void onResume() {
         super.onResume();
-        stickyHandler.removeCallbacks(stickyReturnRunnable);
         hideSystemUI();
         if (!parentExitRequested) {
             pinScreen();
@@ -1297,9 +1278,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        if (!parentExitRequested) scheduleStickyReturn();
+    }
+
+    @Override
     protected void onDestroy() {
-        stickyHandler.removeCallbacks(stickyReturnRunnable);
         super.onDestroy();
+        stickyHandler.removeCallbacksAndMessages(null);
         cancelParentDeleteHold();
         seekHandler.removeCallbacksAndMessages(null);
         deleteHoldHandler.removeCallbacksAndMessages(null);

@@ -11,6 +11,7 @@ import android.content.Intent;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.os.Build;
+import android.os.StatFs;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.SystemClock;
@@ -57,10 +58,14 @@ public class SyncService extends Service {
     // Remote HTTPS server (Cloudflare tunnel to Hetzner)
     private static final String REMOTE_SERVER_URL = "https://files.signal.observer";
 
-    // Where videos live — internal storage first (SD card has EPERM on Android 11)
+    /** Keep ~5GB free on device; skip/evict archive when tighter. */
+    private static final long FREE_RESERVE_BYTES = 5L * 1024 * 1024 * 1024;
+
+    // Fallback paths (prefer adoptable SD via getExternalFilesDirs in findVideoDir)
     private static final String[] VIDEO_DIRS = {
-        "/sdcard/kidvid/videos/",
-        "/storage/AE60-81BC/kidvid/videos/"
+        "/storage/032b6b3c-f086-480d-b056-e774c53e4d39/Android/data/com.kidvid/files/videos/",
+        "/storage/032b6b3c-f086-480d-b056-e774c53e4d39/kidvid/videos/",
+        "/sdcard/kidvid/videos/"
     };
 
     private ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -159,14 +164,21 @@ public class SyncService extends Service {
 
         long triggerAt = SystemClock.elapsedRealtime() + SYNC_INTERVAL_MS;
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setExactAndAllowWhileIdle(
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+            }
+            Log.i(TAG, "Next sync scheduled in 15 minutes (exact, survives Doze)");
+        } catch (SecurityException se) {
+            // targetSdk 34+: SCHEDULE_EXACT_ALARM may be denied until user/appops grants it
+            alarmManager.setAndAllowWhileIdle(
                 AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
-        } else {
-            alarmManager.setExact(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi);
+            Log.w(TAG, "Exact alarm denied; scheduled inexact: " + se.getMessage());
         }
-        Log.i(TAG, "Next sync scheduled in 15 minutes (exact, survives Doze)");
     }
 
     /**
@@ -177,6 +189,7 @@ public class SyncService extends Service {
 
         // Find writable video directory first
         String videoDir = findVideoDir();
+        migrateVideosOntoPreferredDir(videoDir);
         if (videoDir == null) {
             Log.w(TAG, "No writable video directory found, skipping sync");
             return;
@@ -223,13 +236,28 @@ public class SyncService extends Service {
 
         try {
             JSONArray videos = new JSONArray(remoteJson);
+            // Sort by server priority (1=primary first, 9=archive last), then name
+            java.util.List<JSONObject> ordered = new java.util.ArrayList<>();
+            for (int i = 0; i < videos.length(); i++) {
+                ordered.add(videos.getJSONObject(i));
+            }
+            java.util.Collections.sort(ordered, new java.util.Comparator<JSONObject>() {
+                @Override public int compare(JSONObject a, JSONObject b) {
+                    int pa = a.optInt("priority", 1);
+                    int pb = b.optInt("priority", 1);
+                    if (pa != pb) return Integer.compare(pa, pb);
+                    return a.optString("name", "").compareTo(b.optString("name", ""));
+                }
+            });
 
             // Download new videos; ack (do not DELETE) so other devices still see them
-            for (int i = 0; i < videos.length(); i++) {
-                JSONObject v = videos.getJSONObject(i);
+            for (JSONObject v : ordered) {
                 String name = v.getString("name");
                 String url = v.getString("url");
                 long size = v.getLong("size");
+                int priority = v.optInt("priority", 1);
+                boolean archive = priority >= 9
+                        || "archive".equalsIgnoreCase(v.optString("tier", ""));
 
                 // Never re-download something marked for remote delete
                 if (pendingDeletes.contains(name)) {
@@ -249,17 +277,27 @@ public class SyncService extends Service {
                 if (localFile.exists() && localFile.length() == size) {
                     Log.d(TAG, "Already have: " + name);
                     ackDownload(baseUrl, name, device);
+                    ensureSidecarJpg(baseUrl, videoDir, name, v.optString("thumb_url", null));
                     continue;
                 }
 
-                Log.i(TAG, "Downloading: " + name + " (" + (size / 1024 / 1024) + " MB)");
+                if (!ensureSpaceForDownload(videoDir, size, !archive, baseUrl, device)) {
+                    Log.i(TAG, "Skip (low space" + (archive ? ", archive)" : ")") + ": " + name);
+                    continue;
+                }
+
+                Log.i(TAG, "Downloading: " + name + " (" + (size / 1024 / 1024) + " MB) pri=" + priority);
                 boolean downloaded = downloadFile(fullUrl, localFile);
 
-                // After successful download, ack — library stays permanently on server
+                // After successful download, ack — library stays until 7-day age-out
                 if (downloaded) {
                     ackDownload(baseUrl, name, device);
+                    ensureSidecarJpg(baseUrl, videoDir, name, v.optString("thumb_url", null));
                 }
             }
+
+            // Backfill thumbs for local mp4s already acked (not in unacked list)
+            ensureMissingThumbs(baseUrl, videoDir);
 
             Log.i(TAG, "Sync complete. Processed " + videos.length() + " videos.");
 
@@ -380,6 +418,7 @@ public class SyncService extends Service {
         File appExt = getExternalFilesDir(null);
         if (appExt != null) dirs.add(new File(appExt, "videos").getAbsolutePath() + "/");
         dirs.add(new File(getFilesDir(), "videos").getAbsolutePath() + "/");
+        dirs.add("/storage/032b6b3c-f086-480d-b056-e774c53e4d39/Android/data/com.kidvid/files/videos/");
         dirs.add("/sdcard/kidvid/videos/");
         return dirs;
     }
@@ -422,12 +461,11 @@ public class SyncService extends Service {
 
     /**
      * Parent-delete / CoS helper: DELETE library file on the server.
-     * Requires ?parent=1 (Hetzner guard) so bare DELETEs from old sync clients are ignored.
      * Server also tees pending deletes for all known devices; we still tee
      * legacy phone+fire for older servers / CoS scripts.
      *
      * curl examples:
-     *   curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4?parent=1"
+     *   curl -X DELETE "https://files.signal.observer/videos/SOME_FILE.mp4"
      *   curl -X PUT "https://files.signal.observer/deletes/SOME_FILE.mp4"
      */
     public static boolean deleteRemoteVideo(String filename) {
@@ -436,9 +474,8 @@ public class SyncService extends Service {
             Log.w(TAG, "Refusing DELETE with unsafe filename: " + filename);
             return false;
         }
-        // Parent PIN only — sync path must never call this. ?parent=1 required by server guard.
-        boolean libraryGone = deleteFromServerUrl(
-                REMOTE_SERVER_URL + "/videos/" + filename + "?parent=1");
+        // DELETE removes from shared library; server tees pending deletes to known devices
+        boolean libraryGone = deleteFromServerUrl(REMOTE_SERVER_URL + "/videos/" + filename + "?parent=1");
         // Extra tee for legacy buckets (no-op if server already covered them)
         boolean pendingPhone = queuePendingDelete(REMOTE_SERVER_URL, filename, "phone");
         boolean pendingFire = queuePendingDelete(REMOTE_SERVER_URL, filename, "fire");
@@ -456,7 +493,7 @@ public class SyncService extends Service {
         String urlStr = baseUrl + "/acked/" + filename + "?device=" + d;
         try {
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection(); KidVidAuth.apply(conn);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
             conn.setRequestMethod("PUT");
@@ -476,6 +513,91 @@ public class SyncService extends Service {
         }
     }
 
+    /** Clear ack after local eviction so server re-offers the file. */
+    private static boolean unackDownload(String baseUrl, String filename, String device) {
+        if (filename == null || filename.isEmpty()) return false;
+        if (filename.contains("/") || filename.contains("\\") || filename.contains("..")) return false;
+        String d = (device == null || device.isEmpty()) ? "android" : device;
+        String urlStr = baseUrl + "/acked/" + filename + "?device=" + d;
+        try {
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection(); KidVidAuth.apply(conn);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(30000);
+            conn.setRequestMethod("DELETE");
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            if (code == 200 || code == 404) {
+                Log.i(TAG, "Unacked (HTTP " + code + "): " + urlStr);
+                return true;
+            }
+            Log.w(TAG, "Unack returned " + code + " for " + urlStr);
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Unack failed: " + urlStr, e);
+            return false;
+        }
+    }
+
+    private static boolean isArchiveName(String name) {
+        if (name == null) return false;
+        String low = name.toLowerCase(java.util.Locale.US);
+        String[] hints = {
+            "popeye", "superman", "skeleton", "casper", "silly-symphon", "jetsons",
+            "woody_woodpecker", "mighty_mouse", "noveltoon", "cobweb", "big_bad_wolf",
+            "hectors_", "bb_minnie", "bb_snow", "steamboat", "flip_frog",
+            "disney-animated", "santas-workshop", "mother_goose"
+        };
+        for (String h : hints) {
+            if (low.contains(h)) return true;
+        }
+        return false;
+    }
+
+    private long usableSpaceBytes(String videoDir) {
+        try {
+            StatFs stat = new StatFs(videoDir);
+            return stat.getAvailableBlocksLong() * stat.getBlockSizeLong();
+        } catch (Exception e) {
+            File f = new File(videoDir);
+            return f.getUsableSpace();
+        }
+    }
+
+    /**
+     * Ensure need bytes fit while keeping FREE_RESERVE. Evict archive locals when
+     * downloading primary content; never evict for archive downloads.
+     */
+    private boolean ensureSpaceForDownload(String videoDir, long need, boolean allowEvict,
+                                           String baseUrl, String device) {
+        if (usableSpaceBytes(videoDir) - need >= FREE_RESERVE_BYTES) return true;
+        if (!allowEvict) return false;
+        File dir = new File(videoDir);
+        File[] files = dir.listFiles();
+        if (files == null) return false;
+        java.util.List<File> archives = new java.util.ArrayList<>();
+        for (File f : files) {
+            if (f.isFile() && f.getName().toLowerCase(java.util.Locale.US).endsWith(".mp4")
+                    && isArchiveName(f.getName())) {
+                archives.add(f);
+            }
+        }
+        java.util.Collections.sort(archives, new java.util.Comparator<java.io.File>() { public int compare(java.io.File a, java.io.File b) { return Long.compare(b.length(), a.length()); } });
+        for (File f : archives) {
+            if (usableSpaceBytes(videoDir) - need >= FREE_RESERVE_BYTES) break;
+            String name = f.getName();
+            Log.i(TAG, "Evict archive for space: " + name + " (" + (f.length() / 1024 / 1024) + " MB)");
+            // noinspection ResultOfMethodCallIgnored
+            f.delete();
+            File jpg = new File(dir, name.replaceAll("(?i)\\.mp4$", ".jpg"));
+            // noinspection ResultOfMethodCallIgnored
+            jpg.delete();
+            unackDownload(baseUrl, name, device);
+        }
+        return usableSpaceBytes(videoDir) - need >= FREE_RESERVE_BYTES;
+    }
+
+
     /**
      * CoS / app: tee a durable pending delete on the server.
      */
@@ -486,7 +608,7 @@ public class SyncService extends Service {
         String urlStr = baseUrl + "/deletes/" + filename + "?device=" + d;
         try {
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection(); KidVidAuth.apply(conn);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
             conn.setRequestMethod("PUT");
@@ -510,7 +632,7 @@ public class SyncService extends Service {
     private static boolean deleteFromServerUrl(String urlStr) {
         try {
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection(); KidVidAuth.apply(conn);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
             conn.setRequestMethod("DELETE");
@@ -605,38 +727,64 @@ public class SyncService extends Service {
      * Use app-specific external storage as primary (no permissions needed).
      */
     private String findVideoDir() {
-        // Try app-specific external storage first (no permissions needed, survives app updates)
-        File appExtDir = new File(getExternalFilesDir(null), "videos");
-        if (appExtDir.exists() || appExtDir.mkdirs()) {
-            Log.i(TAG, "Using app-specific external storage: " + appExtDir.getAbsolutePath());
-            return appExtDir.getAbsolutePath() + "/";
-        }
+        // Prefer writable videos dir with MOST free space (adoptable SD / expand wins).
+        long[] bestBox = new long[] { -1 };
+        String[] bestPath = new String[] { null };
 
-        // Fallback to configured paths
-        for (String path : VIDEO_DIRS) {
-            File dir = new File(path);
-            if (dir.exists() && dir.canWrite()) {
-                // Test actual write
-                try {
-                    File test = new File(dir, ".write_test");
-                    if (test.createNewFile()) {
-                        test.delete();
-                        return path;
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "Write test failed for " + path + ": " + e.getMessage());
-                }
+        scoreVideoCandidate(new File(getFilesDir(), "videos"), "files", bestBox, bestPath);
+
+        File[] extDirs = getExternalFilesDirs(null);
+        if (extDirs != null) {
+            for (File root : extDirs) {
+                if (root == null) continue;
+                scoreVideoCandidate(new File(root, "videos"), "ext", bestBox, bestPath);
             }
         }
 
-        // Last resort: app internal storage
-        File intDir = new File(getFilesDir(), "videos");
-        if (intDir.exists() || intDir.mkdirs()) {
-            return intDir.getAbsolutePath() + "/";
+        if (bestPath[0] != null) {
+            Log.i(TAG, "Using preferred video dir: " + bestPath[0] + " freeScore=" + bestBox[0]);
+            return bestPath[0];
         }
 
+        for (String path : VIDEO_DIRS) {
+            File dir = new File(path);
+            if (!dir.exists()) dir.mkdirs();
+            if (dir.isDirectory() && dir.canWrite()) {
+                Log.i(TAG, "Using fallback video dir: " + path);
+                return path.endsWith("/") ? path : path + "/";
+            }
+        }
         return null;
     }
+
+    private void scoreVideoCandidate(File videos, String label, long[] bestBox, String[] bestPath) {
+        if (videos == null) return;
+        if (!videos.exists() && !videos.mkdirs()) {
+            Log.w(TAG, "mkdir failed (" + label + "): " + videos.getAbsolutePath());
+            return;
+        }
+        if (!videos.isDirectory() || !videos.canWrite()) return;
+        long free;
+        try {
+            StatFs stat = new StatFs(videos.getAbsolutePath());
+            free = stat.getAvailableBlocksLong() * stat.getBlockSizeLong();
+        } catch (Exception e) {
+            free = videos.getUsableSpace();
+        }
+        String path = videos.getAbsolutePath();
+        if (!path.endsWith("/")) path = path + "/";
+        boolean onExpand = path.contains("/032b6b3c-") || path.contains("/mnt/expand/")
+                || (path.contains("/storage/") && !path.contains("/emulated/")
+                    && !path.contains("/sdcard"));
+        long score = free + (onExpand ? (50L * 1024L * 1024L * 1024L) : 0L);
+        Log.i(TAG, "Candidate video dir (" + label + "): " + path
+                + " free=" + free + " expand=" + onExpand);
+        if (score > bestBox[0]) {
+            bestBox[0] = score;
+            bestPath[0] = path;
+        }
+    }
+
 
     /**
      * Simple HTTP GET returning response body as string.
@@ -644,7 +792,7 @@ public class SyncService extends Service {
     private String httpGet(String urlStr) {
         try {
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection(); KidVidAuth.apply(conn);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
             conn.setRequestMethod("GET");
@@ -677,7 +825,7 @@ public class SyncService extends Service {
         File tmp = new File(dest.getAbsolutePath() + ".tmp");
         try {
             URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection(); KidVidAuth.apply(conn);
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(5 * 60 * 1000); // 5 min read timeout for large files
 
@@ -720,4 +868,102 @@ public class SyncService extends Service {
             context.startService(intent);
         }
     }
+    /** Copy /sdcard/kidvid/videos onto preferred dir (expand files/) then delete sources. */
+    private void migrateVideosOntoPreferredDir(String destDir) {
+        if (destDir == null) return;
+        File dest = new File(destDir);
+        if (!dest.isDirectory() || !dest.canWrite()) return;
+        boolean destOnExpand = destDir.contains("/032b6b3c-") || destDir.contains("/mnt/expand/")
+                || (destDir.contains("/storage/") && !destDir.contains("/emulated/")
+                    && !destDir.contains("/sdcard"));
+        // Also migrate when dest has vastly more free space than /sdcard (StatFs)
+        long destFree = 0;
+        try {
+            StatFs stat = new StatFs(destDir);
+            destFree = stat.getAvailableBlocksLong() * stat.getBlockSizeLong();
+        } catch (Exception ignored) {}
+        if (!destOnExpand && destFree < (20L * 1024 * 1024 * 1024)) {
+            Log.i(TAG, "Skip migrate: dest not roomy/expand: " + destDir + " free=" + destFree);
+            return;
+        }
+        String[] sources = {
+            "/sdcard/kidvid/videos/",
+            "/storage/emulated/0/kidvid/videos/",
+            "/storage/emulated/0/Android/data/com.kidvid/files/videos/"
+        };
+        for (String srcPath : sources) {
+            File src = new File(srcPath);
+            if (!src.isDirectory()) continue;
+            File[] files = src.listFiles();
+            if (files == null) continue;
+            for (File f : files) {
+                if (f == null || !f.isFile()) continue;
+                String n = f.getName();
+                String lower = n.toLowerCase();
+                if (!lower.endsWith(".mp4") && !lower.endsWith(".jpg")) continue;
+                File out = new File(dest, n);
+                if (out.exists() && out.length() == f.length()) {
+                    if (!f.delete()) Log.w(TAG, "Could not delete dup source: " + f);
+                    continue;
+                }
+                Log.i(TAG, "Migrating to SD: " + n);
+                if (copyFileLocal(f, out)) {
+                    if (!f.delete()) Log.w(TAG, "Migrated but could not delete: " + f);
+                } else {
+                    if (out.exists() && out.length() != f.length()) out.delete();
+                }
+            }
+        }
+    }
+
+    private boolean copyFileLocal(File from, File to) {
+        java.io.InputStream in = null;
+        java.io.OutputStream out = null;
+        try {
+            in = new java.io.FileInputStream(from);
+            out = new java.io.FileOutputStream(to);
+            byte[] buf = new byte[1024 * 1024];
+            int n;
+            while ((n = in.read(buf)) >= 0) {
+                out.write(buf, 0, n);
+            }
+            out.flush();
+            return to.exists() && to.length() == from.length();
+        } catch (Exception e) {
+            Log.e(TAG, "copyFileLocal failed: " + from + " -> " + to, e);
+            return false;
+        } finally {
+            try { if (in != null) in.close(); } catch (Exception ignored) {}
+            try { if (out != null) out.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void ensureSidecarJpg(String baseUrl, String videoDir, String mp4Name, String thumbUrl) {
+        if (mp4Name == null || !mp4Name.toLowerCase().endsWith(".mp4")) return;
+        String jpgName = mp4Name.substring(0, mp4Name.length() - 4) + ".jpg";
+        File jpg = new File(videoDir, jpgName);
+        if (jpg.exists() && jpg.length() > 0) return;
+        String url;
+        if (thumbUrl != null && thumbUrl.length() > 0) {
+            url = thumbUrl.startsWith("http") ? thumbUrl : baseUrl + thumbUrl;
+        } else {
+            url = baseUrl + "/videos/" + jpgName;
+        }
+        Log.i(TAG, "Fetching thumb: " + jpgName);
+        downloadFile(url, jpg);
+    }
+
+    private void ensureMissingThumbs(String baseUrl, String videoDir) {
+        File dir = new File(videoDir);
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f == null || !f.isFile()) continue;
+            String n = f.getName();
+            if (!n.toLowerCase().endsWith(".mp4")) continue;
+            ensureSidecarJpg(baseUrl, videoDir, n, null);
+        }
+    }
+
+
 }

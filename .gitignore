@@ -24,3 +24,6 @@ app/*.apk
 app/*.idsig
 *.dex
 .DS_Store
+
+# Local Pixel auth helper; never commit the token.
+app/src/com/kidvid/KidVidAuth.java

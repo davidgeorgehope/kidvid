@@ -243,7 +243,7 @@ public class KidVidVolumeTest {
         VolumeController controller = new VolumeController(host);
 
         controller.applyPolicy(VolumePolicy.of(60, 60, false, 22 * 60, 540, 30));
-        assertEquals(9, host.streamVolume); // round(0.6 * 15) = 9
+        assertEquals(9, host.streamVolume); // floor(0.6 * 15) = 9
 
         // System volume slider or ADB raises stream to 15/15
         host.streamVolume = 15;
@@ -270,5 +270,16 @@ public class KidVidVolumeTest {
         host.minuteOfDay = 7 * 60;
         controller.tick();
         assertEquals(20, host.streamVolume);
+    }
+
+    @Test
+    public void legacyPixelNightIndexIsTwelve() {
+        VolumePolicy def = VolumePolicy.defaults();
+        // 50% of 25 is 12.5; floor keeps the legacy Magisk/mini night level of 12
+        // (Math.round would be 13 and fight the fallback enforcer).
+        assertEquals(12, def.desiredStreamIndex(50, 25));
+        assertEquals(25, def.desiredStreamIndex(100, 25));
+        assertEquals(12, def.desiredStreamIndex(def.targetPercentAt(22 * 60), 25));
+        assertEquals(25, def.desiredStreamIndex(def.targetPercentAt(7 * 60), 25));
     }
 }
