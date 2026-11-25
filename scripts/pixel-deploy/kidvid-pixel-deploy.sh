@@ -26,6 +26,23 @@ log() {
     echo "$(date '+%F %T %Z') $*"
 }
 
+# LaunchAgent polls every 90s. While the Pixel is at school or awake,
+# log the wait at most once per half hour so deploy.log / launchd.out
+# are not spammed. Never webhook or disarm from a wait.
+WAIT_LOG_SECS=1800
+log_wait() {
+    local now last stamp="$STATE/last_wait_log"
+    now=$(date +%s)
+    last=$(cat "$stamp" 2>/dev/null || echo 0)
+    case "$last" in
+        ''|*[!0-9]*) last=0 ;;
+    esac
+    if [ $((now - last)) -ge "$WAIT_LOG_SECS" ]; then
+        log "$@"
+        echo "$now" > "$stamp"
+    fi
+}
+
 # Already finished or cancelled.
 if [ -f "$STATE/disarmed" ]; then
     exit 0
@@ -169,14 +186,14 @@ if [ "$EXPIRED" = "1" ]; then
 fi
 
 if [ ! -f "$APK" ]; then
-    log "no apk at $APK (will retry)"
+    log_wait "no apk at $APK (will retry)"
     exit 0
 fi
 
 ADB=$(pick_adb || true)
 AAPT=$(pick_aapt || true)
 if [ -z "${ADB:-}" ]; then
-    log "no adb (will retry)"
+    log_wait "no adb (will retry)"
     exit 0
 fi
 
@@ -187,7 +204,7 @@ if [ -n "${AAPT:-}" ]; then
     APK_NAME=$("$AAPT" dump badging "$APK" 2>/dev/null | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)
 fi
 if [ -z "${APK_CODE:-}" ]; then
-    log "cannot read apk version (will retry)"
+    log_wait "cannot read apk version (will retry)"
     exit 0
 fi
 
@@ -223,8 +240,11 @@ ensure_connected() {
     return 1
 }
 
-if ! ensure_connected 6; then
-    log "pixel unreachable $IP (will retry, doze wake can take a few tries)"
+# A few short connects are enough: the agent retries every 90s. A long
+# 6x20s loop overlaps the next poll and looks like failure spam while
+# the phone is simply off the home LAN.
+if ! ensure_connected 3; then
+    log_wait "pixel unreachable $IP (waiting until it is back on the home LAN; not a failure)"
     exit 0
 fi
 
@@ -430,13 +450,13 @@ if [ "$FORCE" = "1" ]; then
     log "KIDVID_DEPLOY_FORCE=1: skipping idle wait (parent-approved interrupt)"
 else
     if ! is_idle; then
-        log "pixel reachable but not idle (screen on or KidVid playing) — will retry"
+        log_wait "pixel reachable but not idle (screen on or KidVid playing) — will retry"
         exit 0
     fi
 
     # Re-check idle immediately before any mutating step.
     if ! is_idle; then
-        log "became busy before install — will retry"
+        log_wait "became busy before install — will retry"
         exit 0
     fi
 fi
@@ -457,7 +477,7 @@ fi
 if [ "$SKIP_INSTALL" = "0" ]; then
     # Final idle gate (skipped when parent approved an immediate install)
     if [ "$FORCE" != "1" ] && ! is_idle; then
-        log "became busy at install gate — will retry"
+        log_wait "became busy at install gate — will retry"
         exit 0
     fi
     log "installing $APK_NAME ($APK_CODE) over $INST_NAME ($INST_CODE)"
@@ -499,11 +519,10 @@ EOF
     run_timeout 30 "$ADB" -s "$SERIAL" push "$STATE/install-kidvid-lock.sh" /data/local/tmp/install-kidvid-lock.sh >/dev/null
     LOCK_OUT=$(run_timeout 25 "$ADB" -s "$SERIAL" shell su -c "sh /data/local/tmp/install-kidvid-lock.sh") || true
     if printf '%s\n' "$LOCK_OUT" | grep -q "OK"; then
-        # Restart via a pushed script so we never `pkill -f` a pattern that
-        # also matches the parent `sh -c` (that killed the shell before
-        # service.sh could start). The restarter kills only PIDs whose
-        # cmdline has the service path as a whole argv entry, then starts
-        # a new daemon with stdin closed and exits.
+        # Restart via a pushed script. Do not `pkill -f` (matches the
+        # parent shell) and do not parse /proc/pid/cmdline with `tr`
+        # (a NUL / \0 mismatch leaves old daemons running). Use `ps`
+        # ARGS, echo OK, then setsid so adb does not wait on the loop.
         cat > "$STATE/restart-kidvid-lock.sh" << "EOF"
 #!/system/bin/sh
 # Identify daemons from `ps` ARGS that contain this exact script path
