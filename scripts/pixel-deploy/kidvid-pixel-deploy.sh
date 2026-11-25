@@ -232,6 +232,35 @@ SHELLC() {
     run_timeout "${1:-20}" "$ADB" -s "$SERIAL" shell "${@:2}"
 }
 
+# After adb install -r: make KidVid the HOME app, start it, re-enter lock task.
+relaunch_kiosk() {
+    local out state task
+    run_timeout 20 "$ADB" -s "$SERIAL" shell cmd package set-home-activity com.kidvid/.MainActivity >/dev/null 2>&1 || true
+    out=$(SHELLC 30 am start -W -n com.kidvid/.MainActivity -a android.intent.action.MAIN -c android.intent.category.HOME 2>&1) || true
+    log "kiosk start: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-240)"
+    sleep 2
+    state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
+    if [ "$state" != "LOCKED" ]; then
+        task=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*Task{[^ ]* #\([0-9][0-9]*\) type=standard A=[0-9]*:com.kidvid.*/\1/p' | head -1)
+        if [ -n "$task" ]; then
+            SHELLC 15 am task lock "$task" >/dev/null 2>&1 || true
+            sleep 1
+            state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
+        fi
+    fi
+    local home
+    home=$(SHELLC 15 cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | tail -1)
+    log "kiosk lock=$state home=$(printf '%s' "$home" | tr '\n' ' ')"
+    if [ "$state" = "LOCKED" ]; then
+        return 0
+    fi
+    # App may still be starting pinScreen(); one more start + short wait.
+    SHELLC 30 am start -n com.kidvid/.MainActivity >/dev/null 2>&1 || true
+    sleep 2
+    state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
+    [ "$state" = "LOCKED" ]
+}
+
 # Idle = screen off AND KidVid is not in a started / PLAYING media state.
 # MediaPlayer construct/release with state:idle is not treated as playing.
 # Android 15 dumpsys power no longer prints mScreenState; use mWakefulness
@@ -341,6 +370,14 @@ if [ "$SKIP_INSTALL" = "0" ]; then
         finish_fail 3 "adb install failed: $(printf '%s' "$INST_OUT" | tr '\n' ' ' | cut -c1-400)"
     fi
     log "install ok"
+    # install -r kills the running process and ends the lock-task session.
+    # BootReceiver only runs at BOOT_COMPLETED, and the HOME role can fall
+    # back to Nexus Launcher after a package replace, so screen-on would
+    # show the Pixel launcher instead of KidVid. Restore HOME, start the
+    # app, and re-enter lock task before we leave the phone idle-but-unlocked.
+    if ! relaunch_kiosk; then
+        finish_fail 7 "apk installed but failed to relaunch KidVid into lock task"
+    fi
 fi
 
 # Update Magisk module files (policy + service). Keylayouts unchanged.
