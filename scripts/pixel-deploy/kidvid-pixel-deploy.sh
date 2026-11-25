@@ -359,15 +359,20 @@ sys.exit(0 if playing else 1)
     return 0
 }
 
-if ! is_idle; then
-    log "pixel reachable but not idle (screen on or KidVid playing) — will retry"
-    exit 0
-fi
+FORCE=${KIDVID_DEPLOY_FORCE:-0}
+if [ "$FORCE" = "1" ]; then
+    log "KIDVID_DEPLOY_FORCE=1: skipping idle wait (parent-approved interrupt)"
+else
+    if ! is_idle; then
+        log "pixel reachable but not idle (screen on or KidVid playing) — will retry"
+        exit 0
+    fi
 
-# Re-check idle immediately before any mutating step.
-if ! is_idle; then
-    log "became busy before install — will retry"
-    exit 0
+    # Re-check idle immediately before any mutating step.
+    if ! is_idle; then
+        log "became busy before install — will retry"
+        exit 0
+    fi
 fi
 
 # Installed version
@@ -384,8 +389,8 @@ else
 fi
 
 if [ "$SKIP_INSTALL" = "0" ]; then
-    # Final idle gate
-    if ! is_idle; then
+    # Final idle gate (skipped when parent approved an immediate install)
+    if [ "$FORCE" != "1" ] && ! is_idle; then
         log "became busy at install gate — will retry"
         exit 0
     fi
