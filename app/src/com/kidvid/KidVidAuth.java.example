@@ -1,0 +1,14 @@
+package com.kidvid;
+
+import java.net.HttpURLConnection;
+
+/** Copy to KidVidAuth.java and fill in the server token. Do not commit the filled file. */
+final class KidVidAuth {
+    private static final String TOKEN = "replace-me";
+    private KidVidAuth() {}
+    static void apply(HttpURLConnection conn) {
+        if (conn != null && "files.signal.observer".equals(conn.getURL().getHost())) {
+            conn.setRequestProperty("Authorization", "Bearer " + TOKEN);
+        }
+    }
+}

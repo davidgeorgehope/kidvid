@@ -112,8 +112,10 @@ public final class VolumePolicy {
         }
         int capped = Math.min(clampPercent(targetPercent), maxVolumePercent);
         int maxAllowed = maxAllowedStreamIndex(streamMaxVolume);
-        int rounded = (int) Math.round((capped / 100.0) * streamMaxVolume);
-        return Math.max(0, Math.min(maxAllowed, rounded));
+        // floor() so default 50% of Pixel STREAM_MUSIC max 25 is 12, matching
+        // the legacy kidvid_lock / pixel-volume night level (round would be 13).
+        int indexed = (int) Math.floor((capped / 100.0) * streamMaxVolume);
+        return Math.max(0, Math.min(maxAllowed, indexed));
     }
 
     public float computePlayerGain(int desiredPercent, int actualStreamIndex, int streamMaxVolume) {

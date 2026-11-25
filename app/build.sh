@@ -43,11 +43,18 @@ if [[ -z "${BT:-}" || ! -x "$BT/aapt2" ]]; then
     exit 1
 fi
 
-PLATFORM="$SDK/platforms/android-30/android.jar"
-if [[ ! -f "$PLATFORM" ]]; then
-    echo "ERROR: missing $PLATFORM (sdkmanager \"platforms;android-30\")" >&2
+PLATFORM=""
+for api in 35 34 33 30; do
+    if [[ -f "$SDK/platforms/android-$api/android.jar" ]]; then
+        PLATFORM="$SDK/platforms/android-$api/android.jar"
+        break
+    fi
+done
+if [[ -z "$PLATFORM" || ! -f "$PLATFORM" ]]; then
+    echo "ERROR: missing platforms android-30+ under $SDK/platforms (need android.jar)" >&2
     exit 1
 fi
+echo "Using PLATFORM=$PLATFORM"
 
 JAVAC="${JAVAC:-$(command -v javac)}"
 if [[ -z "$JAVAC" ]]; then
@@ -89,7 +96,7 @@ find "$GEN" "$SRC" -name "*.java" > "$BIN/sources.txt"
 echo "=== Step 4: Convert to DEX ==="
 "$BT/d8" \
     --lib "$PLATFORM" \
-    --min-api 21 \
+    --min-api 30 \
     --output "$BIN" \
     $(find "$OBJ" -name "*.class")
 

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kidvid.pixel-deploy</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/davidhope/workspace/kidvid/scripts/pixel-deploy/kidvid-pixel-deploy.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>90</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/davidhope/.config/kidvid-pixel-deploy/launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/davidhope/.config/kidvid-pixel-deploy/launchd.err</string>
+</dict>
+</plist>
