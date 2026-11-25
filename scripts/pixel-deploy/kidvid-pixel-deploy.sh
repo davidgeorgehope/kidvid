@@ -541,7 +541,6 @@ EOF
             log "magisk kidvid_lock restart did not return OK: $(printf '%s' "$RESTART_OUT" | tr '\n' ' ' | cut -c1-200)"
         fi
         log "magisk kidvid_lock service updated and restarted"
-        log "magisk kidvid_lock service updated and restarted"
         MAGISK_OK=1
     else
         log "magisk kidvid_lock update failed: $(printf '%s' "$LOCK_OUT" | tr '\n' ' ' | cut -c1-300)"
