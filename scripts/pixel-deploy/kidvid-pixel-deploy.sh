@@ -57,8 +57,10 @@ pick_adb() {
         "$(command -v adb 2>/dev/null || true)"
     do
         [ -n "$c" ] && [ -x "$c" ] || continue
-        ver=$("$c" version 2>/dev/null | head -1 || true)
-        major=$(printf '%s\n' "$ver" | sed -n 's/.*Version \([0-9][0-9]*\).*/\1/p')
+        ver=$("$c" version 2>/dev/null || true)
+        # "Android Debug Bridge version 1.0.41" is the protocol; the
+        # tool release is on the following line: "Version 37.0.1-...".
+        major=$(printf '%s\n' "$ver" | sed -n 's/^Version \([0-9][0-9]*\).*/\1/p' | head -1)
         if [ -n "$major" ] && [ "$major" -ge 37 ]; then
             printf '%s\n' "$c"
             return 0
@@ -232,16 +234,35 @@ SHELLC() {
 
 # Idle = screen off AND KidVid is not in a started / PLAYING media state.
 # MediaPlayer construct/release with state:idle is not treated as playing.
+# Android 15 dumpsys power no longer prints mScreenState; use mWakefulness
+# plus dumpsys display ("Display State=OFF" / "mState=OFF").
 is_idle() {
-    local power session audio
+    local power display session audio
     power=$(SHELLC 20 dumpsys power 2>/dev/null || true)
-    # Screen must be off. Dozing with screen off is idle; Awake/ON is not.
-    if ! printf '%s\n' "$power" | grep -q 'mScreenState=OFF'; then
+    display=$(SHELLC 25 dumpsys display 2>/dev/null || true)
+    if printf '%s\n' "$power" | grep -qE 'mWakefulness=(Awake|Dreaming)'; then
         return 1
     fi
-    if printf '%s\n' "$power" | grep -qE 'mWakefulness=(Awake|Dreaming)'; then
-        # Screen-off + Awake can happen briefly; still require not-playing below,
-        # but treat Awake as not idle enough to restart the kiosk app.
+    if printf '%s\n' "$power" | grep -q 'mScreenState=ON'; then
+        return 1
+    fi
+    if printf '%s\n' "$display" | grep -qE '^[[:space:]]*Display State=ON$'; then
+        return 1
+    fi
+    screen_off=0
+    if printf '%s\n' "$power" | grep -q 'mScreenState=OFF'; then
+        screen_off=1
+    fi
+    if printf '%s\n' "$power" | grep -qE 'mWakefulness=(Dozing|Asleep)'; then
+        screen_off=1
+    fi
+    if printf '%s\n' "$display" | grep -qE '^[[:space:]]*Display State=OFF$'; then
+        screen_off=1
+    fi
+    if printf '%s\n' "$display" | grep -qE '^[[:space:]]*mState=OFF$'; then
+        screen_off=1
+    fi
+    if [ "$screen_off" != "1" ]; then
         return 1
     fi
     session=$(SHELLC 25 dumpsys media_session 2>/dev/null || true)

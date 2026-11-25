@@ -43,8 +43,10 @@ pick_adb() {
         "$(command -v adb 2>/dev/null || true)"
     do
         [ -n "$c" ] && [ -x "$c" ] || continue
-        ver=$("$c" version 2>/dev/null | head -1 || true)
-        major=$(printf '%s\n' "$ver" | sed -n 's/.*Version \([0-9][0-9]*\).*/\1/p')
+        ver=$("$c" version 2>/dev/null || true)
+        # "Android Debug Bridge version 1.0.41" is the protocol; the
+        # tool release is on the following line: "Version 37.0.1-...".
+        major=$(printf '%s\n' "$ver" | sed -n 's/^Version \([0-9][0-9]*\).*/\1/p' | head -1)
         if [ -n "$major" ] && [ "$major" -ge 37 ]; then
             printf '%s\n' "$c"
             return 0
