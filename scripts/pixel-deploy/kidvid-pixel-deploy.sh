@@ -232,9 +232,15 @@ SHELLC() {
     run_timeout "${1:-20}" "$ADB" -s "$SERIAL" shell "${@:2}"
 }
 
-# After adb install -r: make KidVid the HOME app, start it, re-enter lock task.
+# After adb install -r: disable keyguard, make KidVid HOME, start it,
+# re-enter lock task, and fail if a screen off/on cycle shows keyguard.
 relaunch_kiosk() {
-    local out state task
+    local out state task home was_awake disp win kg focus
+    was_awake=0
+    disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
+    [ "$disp" = "ON" ] && was_awake=1
+
+    run_timeout 20 "$ADB" -s "$SERIAL" shell su -c "locksettings set-disabled true" >/dev/null 2>&1 || true
     run_timeout 20 "$ADB" -s "$SERIAL" shell cmd package set-home-activity com.kidvid/.MainActivity >/dev/null 2>&1 || true
     out=$(SHELLC 30 am start -W -n com.kidvid/.MainActivity -a android.intent.action.MAIN -c android.intent.category.HOME 2>&1) || true
     log "kiosk start: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-240)"
@@ -248,17 +254,36 @@ relaunch_kiosk() {
             state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
         fi
     fi
-    local home
+    if [ "$state" != "LOCKED" ]; then
+        SHELLC 30 am start -n com.kidvid/.MainActivity >/dev/null 2>&1 || true
+        sleep 2
+        state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
+    fi
     home=$(SHELLC 15 cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | tail -1)
     log "kiosk lock=$state home=$(printf '%s' "$home" | tr '\n' ' ')"
-    if [ "$state" = "LOCKED" ]; then
-        return 0
+    if [ "$state" != "LOCKED" ]; then
+        return 1
     fi
-    # App may still be starting pinScreen(); one more start + short wait.
-    SHELLC 30 am start -n com.kidvid/.MainActivity >/dev/null 2>&1 || true
+
+    # Regression check: cycle screen OFF -> ON and ensure KidVid is focused with no keyguard.
+    disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
+    if [ "$disp" = "ON" ]; then
+        SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
+        sleep 2
+    fi
+    SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
     sleep 2
-    state=$(SHELLC 20 dumpsys activity activities 2>/dev/null | sed -n 's/.*mLockTaskModeState=\([A-Z]*\).*/\1/p' | head -1)
-    [ "$state" = "LOCKED" ]
+    win=$(SHELLC 20 dumpsys window 2>/dev/null || true)
+    kg=$(printf '%s\n' "$win" | sed -n 's/.*isKeyguardShowing=\([a-z]*\).*/\1/p' | head -1)
+    focus=$(printf '%s\n' "$win" | sed -n 's/.*mCurrentFocus=Window{[^}]* \([^}]*\)}.*/\1/p' | head -1)
+    log "kiosk screen-cycle keyguard=${kg:-?} focus=${focus:-?}"
+    if [ "$was_awake" = "0" ]; then
+        SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
+    fi
+    if [ "$kg" = "true" ] || ! printf '%s' "${focus:-}" | grep -q "com.kidvid"; then
+        return 1
+    fi
+    return 0
 }
 
 # Idle = screen off AND KidVid is not in a started / PLAYING media state.
