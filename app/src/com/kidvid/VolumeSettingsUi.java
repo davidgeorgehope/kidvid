@@ -36,10 +36,27 @@ final class VolumeSettingsUi {
 
     private VolumeSettingsUi() {}
 
+    static void attachVolumeKeys(final AlertDialog dialog, final VolumeController controller) {
+        if (dialog == null) return;
+        dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
+            @Override
+            public boolean onKey(DialogInterface d, int keyCode, KeyEvent event) {
+                if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                    if (controller != null && event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
+                        controller.onVolumeKey(keyCode);
+                    }
+                    return true;
+                }
+                return false;
+            }
+        });
+    }
+
     static void showPinThenSettings(
             final Activity activity,
             final String expectedPin,
             final VolumePolicy currentPolicy,
+            final VolumeController controller,
             final PolicySavedListener listener) {
         if (activity.isFinishing()) return;
 
@@ -67,7 +84,7 @@ final class VolumeSettingsUi {
                 String entered = pinInput.getText() != null ? pinInput.getText().toString().trim() : "";
                 dialog.dismiss();
                 if (expectedPin.equals(entered)) {
-                    showSettingsDialog(activity, currentPolicy, listener);
+                    showSettingsDialog(activity, currentPolicy, controller, listener);
                 }
             }
         };
@@ -101,12 +118,14 @@ final class VolumeSettingsUi {
         if (dialog.getWindow() != null) {
             dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
         }
+        attachVolumeKeys(dialog, controller);
         dialog.show();
     }
 
     static void showSettingsDialog(
             final Activity activity,
             final VolumePolicy initialPolicy,
+            final VolumeController controller,
             final PolicySavedListener listener) {
         if (activity.isFinishing()) return;
 
@@ -396,7 +415,7 @@ final class VolumeSettingsUi {
                 restartBtn.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        confirmPowerAction(activity, dialog, "Restart the phone?",
+                        confirmPowerAction(activity, dialog, controller, "Restart the phone?",
                                 "KidVid will come back after the phone restarts.",
                                 true);
                     }
@@ -404,7 +423,7 @@ final class VolumeSettingsUi {
                 powerOffBtn.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        confirmPowerAction(activity, dialog, "Power off the phone?",
+                        confirmPowerAction(activity, dialog, controller, "Power off the phone?",
                                 "The phone will shut down. You will need to press the power button to turn it back on.",
                                 false);
                     }
@@ -412,6 +431,7 @@ final class VolumeSettingsUi {
             }
         });
 
+        attachVolumeKeys(dialog, controller);
         dialog.show();
     }
 
@@ -458,10 +478,11 @@ final class VolumeSettingsUi {
     private static void confirmPowerAction(
             final Activity activity,
             final AlertDialog parent,
+            final VolumeController controller,
             String title,
             String message,
             final boolean restart) {
-        new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        AlertDialog confirm = new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle(title)
                 .setMessage(message)
                 .setCancelable(true)
@@ -482,7 +503,9 @@ final class VolumeSettingsUi {
                         }
                     }
                 })
-                .show();
+                .create();
+        attachVolumeKeys(confirm, controller);
+        confirm.show();
     }
 
     private static PowerActions.Host powerHost(final Activity activity) {
@@ -524,7 +547,7 @@ final class VolumeSettingsUi {
                 }
                 try {
                     Process p = Runtime.getRuntime().exec(new String[] {"su", "-c", command});
-                    return p != null;
+                    return PowerActions.rootProcessAccepted(p);
                 } catch (Exception e) {
                     return false;
                 }

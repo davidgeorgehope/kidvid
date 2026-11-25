@@ -83,30 +83,17 @@ public final class VolumeController {
 
         int streamMax = host.getStreamMaxVolume();
         int ceilingPercent = effectiveCeilingPercent(now);
-        int maxAllowedIdx = streamIndexCeiling(ceilingPercent, streamMax);
-        int currentIdx = host.getStreamVolume();
-
-        int nextIdx;
+        // Step the desired percent, not the possibly-elevated OS stream.
+        // tick() or a hard-cap fallback may be holding playback down with
+        // player gain while the stream sits higher; stepping from the stream
+        // would snap the target up, including on volume down.
+        int step = streamMax > 0 ? Math.max(1, (int) Math.floor(100.0 / streamMax)) : 1;
         if (keyCode == KEYCODE_VOLUME_UP) {
-            nextIdx = Math.min(currentIdx + 1, maxAllowedIdx);
+            activeTargetPercent = Math.min(activeTargetPercent + step, ceilingPercent);
         } else {
-            nextIdx = Math.max(0, Math.min(currentIdx - 1, maxAllowedIdx));
+            activeTargetPercent = Math.max(0, activeTargetPercent - step);
         }
-
-        host.setStreamVolume(nextIdx);
-        int actualIdx = host.getStreamVolume();
-        if (actualIdx > maxAllowedIdx) {
-            host.setStreamVolume(maxAllowedIdx);
-            actualIdx = host.getStreamVolume();
-        }
-        if (streamMax > 0) {
-            int pctFromStream = (int) Math.round((Math.min(actualIdx, maxAllowedIdx) * 100.0) / streamMax);
-            activeTargetPercent = Math.min(pctFromStream, ceilingPercent);
-        } else {
-            activeTargetPercent = Math.min(activeTargetPercent, ceilingPercent);
-        }
-        float gain = policy.computePlayerGain(activeTargetPercent, actualIdx, streamMax);
-        host.setPlayerVolume(gain);
+        applyTargetAndClamp(now);
         return true;
     }
 

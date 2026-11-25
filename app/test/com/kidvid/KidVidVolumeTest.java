@@ -282,4 +282,48 @@ public class KidVidVolumeTest {
         assertEquals(12, def.desiredStreamIndex(def.targetPercentAt(22 * 60), 25));
         assertEquals(25, def.desiredStreamIndex(def.targetPercentAt(7 * 60), 25));
     }
+    @Test
+    public void volumeKeyDoesNotSnapUpToElevatedStream() {
+        // Stream stuck at max (root lock or external raise) while player gain
+        // holds output at the 50% target. A volume-down must lower the target,
+        // not snap it up to the 25/25 stream.
+        FakeVolumeHost host = new FakeVolumeHost(25, 25, 12 * 60);
+        host.lockStreamAtMax = true;
+        VolumeController controller = new VolumeController(host);
+        controller.applyPolicy(VolumePolicy.of(50, 100, false, 22 * 60, 540, 40));
+
+        assertEquals(25, host.streamVolume);
+        assertEquals(50, controller.getActiveTargetPercent());
+        assertEquals(0.50, host.effectiveOutputFraction(), 1e-4);
+
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_DOWN));
+        assertEquals(25, host.streamVolume);
+        assertEquals(46, controller.getActiveTargetPercent());
+        assertEquals(0.46, host.effectiveOutputFraction(), 1e-4);
+
+        // Volume up steps the desired percent, not the stuck stream
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_UP));
+        assertEquals(50, controller.getActiveTargetPercent());
+        assertEquals(0.50, host.effectiveOutputFraction(), 1e-4);
+    }
+
+    @Test
+    public void volumeKeyStepsFromDesiredIndexAfterExternalRaise() {
+        FakeVolumeHost host = new FakeVolumeHost(25, 25, 12 * 60);
+        VolumeController controller = new VolumeController(host);
+        controller.applyPolicy(VolumePolicy.of(80, 100, false, 22 * 60, 540, 40));
+        assertEquals(20, host.streamVolume); // floor(0.80 * 25)
+
+        host.streamVolume = 25;
+        controller.tick();
+        // max is 100%, so tick cannot lower the stream; gain holds 80%
+        assertEquals(25, host.streamVolume);
+        assertEquals(80, controller.getActiveTargetPercent());
+        assertEquals(0.80, host.effectiveOutputFraction(), 1e-4);
+
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_DOWN));
+        assertEquals(76, controller.getActiveTargetPercent());
+        assertEquals(19, host.streamVolume); // floor(0.76 * 25)
+        assertEquals(0.76, host.effectiveOutputFraction(), 1e-4);
+    }
 }
