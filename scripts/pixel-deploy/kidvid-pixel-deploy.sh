@@ -345,24 +345,36 @@ fi
 
 # Update Magisk module files (policy + service). Keylayouts unchanged.
 # Live restart of the volume loop is safe: it only sets STREAM_MUSIC.
+# Do not pass a multi-line script to `adb shell su -c` — Magisk su then
+# sees `su -c` with no argument, the copies run unprivileged, and the
+# module stays at the old hardcoded 25/12 service.sh.
 MOD_SRC="$REPO/magisk/kidvid_lock"
 if [ -f "$MOD_SRC/service.sh" ] && [ -f "$MOD_SRC/volume_policy.sh" ]; then
-    run_timeout 20 "$ADB" -s "$SERIAL" shell su -c 'mkdir -p /data/adb/modules/kidvid_lock' >/dev/null 2>&1 || true
     run_timeout 30 "$ADB" -s "$SERIAL" push "$MOD_SRC/service.sh" /data/local/tmp/kidvid_service.sh >/dev/null
     run_timeout 30 "$ADB" -s "$SERIAL" push "$MOD_SRC/volume_policy.sh" /data/local/tmp/kidvid_volume_policy.sh >/dev/null
     run_timeout 30 "$ADB" -s "$SERIAL" push "$MOD_SRC/module.prop" /data/local/tmp/kidvid_module.prop >/dev/null
-    run_timeout 25 "$ADB" -s "$SERIAL" shell su -c '
-        cp /data/local/tmp/kidvid_service.sh /data/adb/modules/kidvid_lock/service.sh
-        cp /data/local/tmp/kidvid_volume_policy.sh /data/adb/modules/kidvid_lock/volume_policy.sh
-        cp /data/local/tmp/kidvid_module.prop /data/adb/modules/kidvid_lock/module.prop
-        chmod 755 /data/adb/modules/kidvid_lock/service.sh
-        chmod 644 /data/adb/modules/kidvid_lock/volume_policy.sh /data/adb/modules/kidvid_lock/module.prop
-        # Restart the loop; do not reboot (keylayouts already in place).
-        pkill -f /data/adb/modules/kidvid_lock/service.sh || true
-    ' >/dev/null
-    # Start a new service loop in the background on device.
-    run_timeout 20 "$ADB" -s "$SERIAL" shell su -c 'sh /data/adb/modules/kidvid_lock/service.sh >/dev/null 2>&1 &' || true
-    log "magisk kidvid_lock service updated and restarted"
+    cat > "$STATE/install-kidvid-lock.sh" << "EOF"
+#!/system/bin/sh
+set -e
+mkdir -p /data/adb/modules/kidvid_lock
+cp /data/local/tmp/kidvid_service.sh /data/adb/modules/kidvid_lock/service.sh
+cp /data/local/tmp/kidvid_volume_policy.sh /data/adb/modules/kidvid_lock/volume_policy.sh
+cp /data/local/tmp/kidvid_module.prop /data/adb/modules/kidvid_lock/module.prop
+chmod 755 /data/adb/modules/kidvid_lock/service.sh
+chmod 644 /data/adb/modules/kidvid_lock/volume_policy.sh /data/adb/modules/kidvid_lock/module.prop
+pkill -f /data/adb/modules/kidvid_lock/service.sh || true
+sleep 1
+sh /data/adb/modules/kidvid_lock/service.sh >/dev/null 2>&1 &
+echo OK
+EOF
+    run_timeout 30 "$ADB" -s "$SERIAL" push "$STATE/install-kidvid-lock.sh" /data/local/tmp/install-kidvid-lock.sh >/dev/null
+    LOCK_OUT=$(run_timeout 25 "$ADB" -s "$SERIAL" shell su -c "sh /data/local/tmp/install-kidvid-lock.sh") || true
+    if printf '%s\n' "$LOCK_OUT" | grep -q "OK"; then
+        log "magisk kidvid_lock service updated and restarted"
+    else
+        log "magisk kidvid_lock update failed: $(printf '%s' "$LOCK_OUT" | tr '\n' ' ' | cut -c1-300)"
+        finish_fail 6 "magisk module copy failed (su). apk may already be installed; module not updated"
+    fi
 else
     log "magisk sources missing under $MOD_SRC"
 fi
