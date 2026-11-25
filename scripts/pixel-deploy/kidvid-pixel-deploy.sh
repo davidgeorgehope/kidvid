@@ -242,6 +242,10 @@ relaunch_kiosk() {
 
     run_timeout 20 "$ADB" -s "$SERIAL" shell su -c "locksettings set-disabled true" >/dev/null 2>&1 || true
     run_timeout 20 "$ADB" -s "$SERIAL" shell cmd package set-home-activity com.kidvid/.MainActivity >/dev/null 2>&1 || true
+    # Package replace can leave the old process running so onCreate/onResume
+    # never re-applies setKeyguardDisabled. Force-stop so the new APK starts clean.
+    SHELLC 20 am force-stop com.kidvid >/dev/null 2>&1 || true
+    sleep 1
     out=$(SHELLC 30 am start -W -n com.kidvid/.MainActivity -a android.intent.action.MAIN -c android.intent.category.HOME 2>&1) || true
     log "kiosk start: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-240)"
     sleep 2
@@ -265,18 +269,39 @@ relaunch_kiosk() {
         return 1
     fi
 
-    # Regression check: cycle screen OFF -> ON and ensure KidVid is focused with no keyguard.
-    disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
-    if [ "$disp" = "ON" ]; then
+    # Regression check: cycle screen OFF -> ON and ensure KidVid is focused
+    # with no keyguard. Wait until Display State=ON; a 2s sleep is too short
+    # and can catch the transient NotificationShade after wake.
+    cycle_and_read() {
+        disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
+        if [ "$disp" = "ON" ]; then
+            SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
+            sleep 3
+        fi
         SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
+        local i
+        for i in 1 2 3 4 5 6 7 8; do
+            sleep 1
+            disp=$(SHELLC 15 dumpsys display 2>/dev/null | sed -n 's/^[[:space:]]*Display State=\([A-Z]*\).*/\1/p' | head -1)
+            [ "$disp" = "ON" ] && break
+        done
         sleep 2
-    fi
-    SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
-    sleep 2
-    win=$(SHELLC 20 dumpsys window 2>/dev/null || true)
-    kg=$(printf '%s\n' "$win" | sed -n 's/.*isKeyguardShowing=\([a-z]*\).*/\1/p' | head -1)
-    focus=$(printf '%s\n' "$win" | sed -n 's/.*mCurrentFocus=Window{[^}]* \([^}]*\)}.*/\1/p' | head -1)
+        win=$(SHELLC 20 dumpsys window 2>/dev/null || true)
+        kg=$(printf '%s\n' "$win" | sed -n 's/.*isKeyguardShowing=\([a-z]*\).*/\1/p' | head -1)
+        focus=$(printf '%s\n' "$win" | sed -n 's/.*mCurrentFocus=Window{[^}]* \([^}]*\)}.*/\1/p' | head -1)
+    }
+    cycle_and_read
     log "kiosk screen-cycle keyguard=${kg:-?} focus=${focus:-?}"
+    if [ "$kg" = "true" ] || ! printf '%s' "${focus:-}" | grep -q "com.kidvid"; then
+        # Re-apply policy and retry once; package replace can drop DPM keyguard disable.
+        run_timeout 20 "$ADB" -s "$SERIAL" shell su -c "locksettings set-disabled true" >/dev/null 2>&1 || true
+        SHELLC 20 am force-stop com.kidvid >/dev/null 2>&1 || true
+        sleep 1
+        SHELLC 30 am start -W -n com.kidvid/.MainActivity -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1 || true
+        sleep 2
+        cycle_and_read
+        log "kiosk screen-cycle retry keyguard=${kg:-?} focus=${focus:-?}"
+    fi
     if [ "$was_awake" = "0" ]; then
         SHELLC 15 input keyevent 26 >/dev/null 2>&1 || true
     fi
