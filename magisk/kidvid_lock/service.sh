@@ -29,6 +29,9 @@ settings put global ota_disable_automatic_update 1
 for c in SystemUpdateService SystemUpdateGcmTaskService SystemUpdatePersistentListenerService SystemUpdateActivity; do
   pm disable --user 0 com.google.android.gms/.update.$c >/dev/null 2>&1
 done
+# Never show Android lock screen or launcher at boot.
+locksettings set-disabled true >/dev/null 2>&1 || true
+cmd package set-home-activity com.kidvid/.MainActivity >/dev/null 2>&1 || true
 log "start pid $$ policy=app-prefs"
 
 get_stream() {
