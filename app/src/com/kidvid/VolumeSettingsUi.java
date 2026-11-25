@@ -3,7 +3,11 @@ package com.kidvid;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.TimePickerDialog;
+import android.app.admin.DevicePolicyManager;
+import android.content.ComponentName;
 import android.content.DialogInterface;
+import android.os.Build;
+import android.widget.Toast;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.text.InputType;
@@ -326,6 +330,30 @@ final class VolumeSettingsUi {
         root.addView(dipVolLabel);
         root.addView(dipVolSeek, seekLayoutParams());
 
+        View powerDivider = new View(activity);
+        powerDivider.setBackgroundColor(Color.argb(60, 255, 255, 255));
+        LinearLayout.LayoutParams powerDivParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 2);
+        powerDivParams.setMargins(0, 16, 0, 16);
+        root.addView(powerDivider, powerDivParams);
+        root.addView(makeLabel(activity, "Phone", 16, true));
+        root.addView(makeHint(activity, "Only from this PIN screen. Confirm before the phone restarts or powers off."));
+
+        LinearLayout powerRow = new LinearLayout(activity);
+        powerRow.setOrientation(LinearLayout.HORIZONTAL);
+        powerRow.setPadding(0, 8, 0, 8);
+        final Button restartBtn = makeChipButton(activity, "Restart");
+        restartBtn.setTag("btn_restart");
+        final Button powerOffBtn = makeChipButton(activity, "Power off");
+        powerOffBtn.setTag("btn_power_off");
+        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        half.setMargins(0, 0, 12, 0);
+        powerRow.addView(restartBtn, half);
+        powerRow.addView(powerOffBtn, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        root.addView(powerRow);
+
         refreshUi.run();
 
         final AlertDialog dialog = new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -363,6 +391,22 @@ final class VolumeSettingsUi {
                         state[4] = def.dipVolumePercent;
                         dipEnabled[0] = def.dipEnabled;
                         refreshUi.run();
+                    }
+                });
+                restartBtn.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        confirmPowerAction(activity, dialog, "Restart the phone?",
+                                "KidVid will come back after the phone restarts.",
+                                true);
+                    }
+                });
+                powerOffBtn.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        confirmPowerAction(activity, dialog, "Power off the phone?",
+                                "The phone will shut down. You will need to press the power button to turn it back on.",
+                                false);
                     }
                 });
             }
@@ -409,5 +453,82 @@ final class VolumeSettingsUi {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         p.setMargins(0, 4, 0, 18);
         return p;
+    }
+
+    private static void confirmPowerAction(
+            final Activity activity,
+            final AlertDialog parent,
+            String title,
+            String message,
+            final boolean restart) {
+        new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(title)
+                .setMessage(message)
+                .setCancelable(true)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton(restart ? "Restart" : "Power off", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        if (parent != null) {
+                            parent.dismiss();
+                        }
+                        boolean ok = restart
+                                ? PowerActions.restart(powerHost(activity))
+                                : PowerActions.powerOff(powerHost(activity));
+                        if (!ok) {
+                            Toast.makeText(activity,
+                                    restart ? "Could not restart" : "Could not power off",
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                })
+                .show();
+    }
+
+    private static PowerActions.Host powerHost(final Activity activity) {
+        return new PowerActions.Host() {
+            @Override
+            public boolean isDeviceOwner() {
+                try {
+                    DevicePolicyManager dpm = (DevicePolicyManager) activity.getSystemService(
+                            Activity.DEVICE_POLICY_SERVICE);
+                    return dpm != null && dpm.isDeviceOwnerApp(activity.getPackageName());
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+
+            @Override
+            public boolean deviceOwnerReboot() {
+                try {
+                    if (Build.VERSION.SDK_INT < 24) {
+                        return false;
+                    }
+                    DevicePolicyManager dpm = (DevicePolicyManager) activity.getSystemService(
+                            Activity.DEVICE_POLICY_SERVICE);
+                    if (dpm == null) {
+                        return false;
+                    }
+                    ComponentName admin = new ComponentName(activity, KidVidDeviceAdmin.class);
+                    dpm.reboot(admin);
+                    return true;
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+
+            @Override
+            public boolean runRoot(String command) {
+                if (command == null || command.length() == 0) {
+                    return false;
+                }
+                try {
+                    Process p = Runtime.getRuntime().exec(new String[] {"su", "-c", command});
+                    return p != null;
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+        };
     }
 }

@@ -44,11 +44,14 @@ javac -source 8 -target 8 -cp "$CP" -d "$OUT" \
     "$PROJECT/src/com/kidvid/VolumeController.java" \
     "$PROJECT/src/com/kidvid/VideoMigration.java" \
     "$PROJECT/src/com/kidvid/StickyReturnPolicy.java" \
+    "$PROJECT/src/com/kidvid/PowerActions.java" \
     "$PROJECT/test/com/kidvid/KidVidVolumeTest.java" \
     "$PROJECT/test/com/kidvid/KidVidMigrationTest.java" \
-    "$PROJECT/test/com/kidvid/KidVidStickyReturnTest.java"
+    "$PROJECT/test/com/kidvid/KidVidStickyReturnTest.java" \
+    "$PROJECT/test/com/kidvid/KidVidPowerActionsTest.java"
 
 java -cp "$OUT:$CP" org.junit.runner.JUnitCore \
     com.kidvid.KidVidVolumeTest \
     com.kidvid.KidVidMigrationTest \
-    com.kidvid.KidVidStickyReturnTest
+    com.kidvid.KidVidStickyReturnTest \
+    com.kidvid.KidVidPowerActionsTest
