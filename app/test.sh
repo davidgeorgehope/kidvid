@@ -42,6 +42,13 @@ javac -source 8 -target 8 -cp "$CP" -d "$OUT" \
     "$PROJECT/src/com/kidvid/VolumePolicy.java" \
     "$PROJECT/src/com/kidvid/VolumeSettingsStore.java" \
     "$PROJECT/src/com/kidvid/VolumeController.java" \
-    "$PROJECT/test/com/kidvid/KidVidVolumeTest.java"
+    "$PROJECT/src/com/kidvid/VideoMigration.java" \
+    "$PROJECT/src/com/kidvid/StickyReturnPolicy.java" \
+    "$PROJECT/test/com/kidvid/KidVidVolumeTest.java" \
+    "$PROJECT/test/com/kidvid/KidVidMigrationTest.java" \
+    "$PROJECT/test/com/kidvid/KidVidStickyReturnTest.java"
 
-java -cp "$OUT:$CP" org.junit.runner.JUnitCore com.kidvid.KidVidVolumeTest
+java -cp "$OUT:$CP" org.junit.runner.JUnitCore \
+    com.kidvid.KidVidVolumeTest \
+    com.kidvid.KidVidMigrationTest \
+    com.kidvid.KidVidStickyReturnTest

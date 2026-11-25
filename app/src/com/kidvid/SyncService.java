@@ -896,13 +896,19 @@ public class SyncService extends Service {
             if (!src.isDirectory()) continue;
             File[] files = src.listFiles();
             if (files == null) continue;
+            // /sdcard and /storage/emulated/0 are the same volume; if dest is
+            // already this source dir, every file would match itself and be deleted.
+            if (VideoMigration.isSameFile(src, dest)) continue;
             for (File f : files) {
                 if (f == null || !f.isFile()) continue;
                 String n = f.getName();
                 String lower = n.toLowerCase();
                 if (!lower.endsWith(".mp4") && !lower.endsWith(".jpg")) continue;
                 File out = new File(dest, n);
-                if (out.exists() && out.length() == f.length()) {
+                if (VideoMigration.isSameFile(f, out)) {
+                    continue;
+                }
+                if (VideoMigration.shouldDeleteSourceAsDuplicate(f, out)) {
                     if (!f.delete()) Log.w(TAG, "Could not delete dup source: " + f);
                     continue;
                 }

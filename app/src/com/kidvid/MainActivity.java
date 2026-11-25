@@ -21,6 +21,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.InputType;
@@ -104,6 +105,17 @@ public class MainActivity extends Activity {
     private final Runnable stickyReturnRunnable = new Runnable() {
         @Override public void run() {
             if (parentExitRequested || isFinishing()) return;
+            // Don't fight a screen-off pause; resume + pin when the display wakes.
+            Boolean interactive = null;
+            try {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                if (pm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
+                    interactive = Boolean.valueOf(pm.isInteractive());
+                }
+            } catch (Exception ignored) {}
+            if (!StickyReturnPolicy.shouldBringToFront(parentExitRequested, isFinishing(), interactive)) {
+                return;
+            }
             bringKidVidToFront();
             pinScreen();
         }
@@ -1265,6 +1277,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        stickyHandler.removeCallbacks(stickyReturnRunnable);
         hideSystemUI();
         if (!parentExitRequested) {
             pinScreen();
