@@ -4,7 +4,7 @@ LaunchAgent `com.kidvid.pixel-deploy` on the Mac mini installs a staged
 APK and refreshes the Magisk `kidvid_lock` module when the kids' Pixel
 is reachable and idle.
 
-Idle rule (hard): the screen is off (`mScreenState=OFF`, not Awake) and
+Idle rule (hard): the screen is off (`mWakefulness` Dozing/Asleep, `Display State=OFF` or legacy `mScreenState=OFF`; never Awake) and
 KidVid is not in a started / PLAYING media state. A MediaPlayer that is
 only constructed and released in `state:idle` does not count as playing.
 A playing video is never interrupted.
