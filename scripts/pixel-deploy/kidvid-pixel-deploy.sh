@@ -255,10 +255,11 @@ display_is_on() {
     return 1
 }
 
-# Live window dump only (`dumpsys window windows`). Full `dumpsys window`
-# prints LAST ANR first, so head -1 can score a stale focus/keyguard.
+# Live display dump only (`dumpsys window displays`). Full `dumpsys window`
+# prints LAST ANR first, and `dumpsys window windows` has no mCurrentFocus
+# or isKeyguardShowing on Android 15.
 read_focus_keyguard() {
-    win=$(SHELLC 20 dumpsys window windows 2>/dev/null || true)
+    win=$(SHELLC 20 dumpsys window displays 2>/dev/null || true)
     kg=$(printf '%s\n' "$win" | sed -n 's/.*mKeyguardShowing=\([a-z]*\).*/\1/p' | tail -1)
     if [ -z "${kg:-}" ]; then
         kg=$(printf '%s\n' "$win" | sed -n 's/.*isKeyguardShowing=\([a-z]*\).*/\1/p' | tail -1)
