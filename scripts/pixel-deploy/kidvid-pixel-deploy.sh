@@ -506,36 +506,41 @@ EOF
         # a new daemon with stdin closed and exits.
         cat > "$STATE/restart-kidvid-lock.sh" << "EOF"
 #!/system/bin/sh
+# Identify daemons from `ps` ARGS that contain this exact script path
+# as a field. Never `pkill -f` (that matches the caller). Echo OK
+# before setsid so a hung adb session still reports success, then
+# detach the new loop so adb/su does not wait on it.
 SVC=/data/adb/modules/kidvid_lock/service.sh
 SELF=$$
-for proc in /proc/[0-9]*; do
-    pid=${proc#/proc/}
+ps -A -o PID,ARGS 2>/dev/null | while read pid rest; do
+    [ "$pid" = "PID" ] && continue
     [ "$pid" = "$SELF" ] && continue
-    if tr ' ' '
-' < "$proc/cmdline" 2>/dev/null | grep -qx "$SVC"; then
-        kill "$pid" 2>/dev/null || true
-    fi
+    case "$rest" in
+        *"/data/adb/modules/kidvid_lock/service.sh")
+            kill "$pid" 2>/dev/null || true
+            ;;
+    esac
 done
 sleep 1
-# Reap anything that ignored the first signal.
-for proc in /proc/[0-9]*; do
-    pid=${proc#/proc/}
+ps -A -o PID,ARGS 2>/dev/null | while read pid rest; do
+    [ "$pid" = "PID" ] && continue
     [ "$pid" = "$SELF" ] && continue
-    if tr ' ' '
-' < "$proc/cmdline" 2>/dev/null | grep -qx "$SVC"; then
-        kill -9 "$pid" 2>/dev/null || true
-    fi
+    case "$rest" in
+        *"/data/adb/modules/kidvid_lock/service.sh")
+            kill -9 "$pid" 2>/dev/null || true
+            ;;
+    esac
 done
-sh "$SVC" </dev/null >/dev/null 2>&1 &
 echo OK
+setsid sh "$SVC" </dev/null >/dev/null 2>&1 &
+exit 0
 EOF
         run_timeout 30 "$ADB" -s "$SERIAL" push "$STATE/restart-kidvid-lock.sh" /data/local/tmp/restart-kidvid-lock.sh >/dev/null
         RESTART_OUT=$(run_timeout 15 "$ADB" -s "$SERIAL" shell su -c "sh /data/local/tmp/restart-kidvid-lock.sh") || true
-        if ! printf '%s
-' "$RESTART_OUT" | grep -q "OK"; then
-            log "magisk kidvid_lock restart did not return OK: $(printf '%s' "$RESTART_OUT" | tr '
-' ' ' | cut -c1-200)"
+        if ! printf '%s\n' "$RESTART_OUT" | grep -q "OK"; then
+            log "magisk kidvid_lock restart did not return OK: $(printf '%s' "$RESTART_OUT" | tr '\n' ' ' | cut -c1-200)"
         fi
+        log "magisk kidvid_lock service updated and restarted"
         log "magisk kidvid_lock service updated and restarted"
         MAGISK_OK=1
     else
