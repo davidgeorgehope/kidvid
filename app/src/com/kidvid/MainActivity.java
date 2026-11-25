@@ -236,6 +236,16 @@ public class MainActivity extends Activity {
                         dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE);
                     }
                 } catch (Exception ignored) {}
+                // Package replace (adb install -r) can drop the HOME role back to
+                // Nexus Launcher. Re-assert it on every start so a screen-on after
+                // an update still opens KidVid, not the Pixel launcher.
+                try {
+                    IntentFilter homeFilter = new IntentFilter(Intent.ACTION_MAIN);
+                    homeFilter.addCategory(Intent.CATEGORY_HOME);
+                    homeFilter.addCategory(Intent.CATEGORY_DEFAULT);
+                    dpm.addPersistentPreferredActivity(admin, homeFilter,
+                            new ComponentName(getPackageName(), MainActivity.class.getName()));
+                } catch (Exception ignored) {}
             }
             pinScreen();
         } catch (Exception e) {

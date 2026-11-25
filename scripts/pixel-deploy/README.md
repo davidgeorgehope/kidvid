@@ -16,7 +16,7 @@ runs `adb install -r` only for an APK whose `versionCode` is at least 13
 and newer than what is on the device. The previously staged 1.1
 (`versionCode` 2) is refused so it cannot replace live `1.7.3-auth`.
 
-After a successful install it updates `/data/adb/modules/kidvid_lock`
+After a successful install it restores KidVid as the default HOME app, launches `MainActivity`, and re-enters lock task (because `adb install -r` kills the process and ends the kiosk session; `BootReceiver` only runs at boot). Then it updates `/data/adb/modules/kidvid_lock`
 `service.sh` + `volume_policy.sh`, restarts the volume loop (no reboot),
 checks that the new version is present and that STREAM_MUSIC matches the
 shared policy, reports via the hetzner-event-poke webhook as job
