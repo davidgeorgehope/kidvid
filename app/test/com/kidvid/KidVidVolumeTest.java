@@ -298,13 +298,14 @@ public class KidVidVolumeTest {
 
         assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_DOWN));
         assertEquals(25, host.streamVolume);
-        assertEquals(46, controller.getActiveTargetPercent());
-        assertEquals(0.46, host.effectiveOutputFraction(), 1e-4);
+        assertEquals(44, controller.getActiveTargetPercent()); // ceil(11 * 100 / 25)
+        assertEquals(0.44, host.effectiveOutputFraction(), 1e-4);
 
-        // Volume up steps the desired percent, not the stuck stream
+        // Volume up steps the desired index, not the stuck stream. 50% and 48%
+        // both map to index 12, so the percent becomes the reversible 48.
         assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_UP));
-        assertEquals(50, controller.getActiveTargetPercent());
-        assertEquals(0.50, host.effectiveOutputFraction(), 1e-4);
+        assertEquals(48, controller.getActiveTargetPercent());
+        assertEquals(0.48, host.effectiveOutputFraction(), 1e-4);
     }
 
     @Test
@@ -325,5 +326,57 @@ public class KidVidVolumeTest {
         assertEquals(76, controller.getActiveTargetPercent());
         assertEquals(19, host.streamVolume); // floor(0.76 * 25)
         assertEquals(0.76, host.effectiveOutputFraction(), 1e-4);
+    }
+    @Test
+    public void percentForStreamIndexIsReversibleWithFloorDesiredIndex() {
+        for (int max : new int[] {6, 7, 15, 25, 30}) {
+            for (int idx = 0; idx <= max; idx++) {
+                int pct = VolumePolicy.percentForStreamIndex(idx, max);
+                assertEquals("max=" + max + " idx=" + idx + " pct=" + pct,
+                        idx, VolumePolicy.defaults().desiredStreamIndex(pct, max));
+            }
+        }
+        assertEquals(0, VolumePolicy.percentForStreamIndex(0, 25));
+        assertEquals(48, VolumePolicy.percentForStreamIndex(12, 25));
+        assertEquals(17, VolumePolicy.percentForStreamIndex(1, 6));
+    }
+
+    @Test
+    public void volumeKeyDoesNotStallWhenStreamMaxDoesNotDivide100() {
+        // floor(100/6)=16, so a percent step of 16 leaves index 3 at both
+        // 50% and 66% (floor(0.50*6)=floor(0.66*6)=3). Stepping the index
+        // must move one level per press.
+        FakeVolumeHost host = new FakeVolumeHost(6, 6, 12 * 60);
+        VolumeController controller = new VolumeController(host);
+        controller.applyPolicy(VolumePolicy.of(50, 100, false, 22 * 60, 540, 40));
+        assertEquals(3, host.streamVolume);
+        assertEquals(50, controller.getActiveTargetPercent());
+
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_UP));
+        assertEquals(4, host.streamVolume);
+        assertEquals(4, VolumePolicy.defaults().desiredStreamIndex(
+                controller.getActiveTargetPercent(), 6));
+
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_UP));
+        assertEquals(5, host.streamVolume);
+
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_DOWN));
+        assertEquals(4, host.streamVolume);
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_DOWN));
+        assertEquals(3, host.streamVolume);
+
+        // Down from 0 stays 0; up from max stays max
+        for (int i = 0; i < 10; i++) {
+            controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_DOWN);
+        }
+        assertEquals(0, host.streamVolume);
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_DOWN));
+        assertEquals(0, host.streamVolume);
+        for (int i = 0; i < 20; i++) {
+            controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_UP);
+        }
+        assertEquals(6, host.streamVolume);
+        assertTrue(controller.onVolumeKey(VolumeController.KEYCODE_VOLUME_UP));
+        assertEquals(6, host.streamVolume);
     }
 }

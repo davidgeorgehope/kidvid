@@ -118,6 +118,20 @@ public final class VolumePolicy {
         return Math.max(0, Math.min(maxAllowed, indexed));
     }
 
+    /**
+     * Lowest whole-percent whose {@link #desiredStreamIndex} is {@code index}
+     * when using floor math. Using floor(index * 100 / max) can map back to
+     * a lower index when max does not divide 100, which stalls volume keys.
+     */
+    public static int percentForStreamIndex(int index, int streamMaxVolume) {
+        if (streamMaxVolume <= 0 || index <= 0) {
+            return 0;
+        }
+        int clipped = Math.min(index, streamMaxVolume);
+        int pct = (int) Math.ceil((clipped * 100.0) / streamMaxVolume);
+        return clampPercent(pct);
+    }
+
     public float computePlayerGain(int desiredPercent, int actualStreamIndex, int streamMaxVolume) {
         int capped = Math.min(clampPercent(desiredPercent), maxVolumePercent);
         if (capped <= 0) {

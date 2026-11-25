@@ -499,8 +499,43 @@ EOF
     run_timeout 30 "$ADB" -s "$SERIAL" push "$STATE/install-kidvid-lock.sh" /data/local/tmp/install-kidvid-lock.sh >/dev/null
     LOCK_OUT=$(run_timeout 25 "$ADB" -s "$SERIAL" shell su -c "sh /data/local/tmp/install-kidvid-lock.sh") || true
     if printf '%s\n' "$LOCK_OUT" | grep -q "OK"; then
-        # Detached start; a hang here must not hide the successful copy.
-        run_timeout 8 "$ADB" -s "$SERIAL" shell su -c "sh -c 'pkill -f /data/adb/modules/kidvid_lock/service.sh || true; sleep 1; sh /data/adb/modules/kidvid_lock/service.sh </dev/null >/dev/null 2>&1 &'" >/dev/null 2>&1 || true
+        # Restart via a pushed script so we never `pkill -f` a pattern that
+        # also matches the parent `sh -c` (that killed the shell before
+        # service.sh could start). The restarter kills only PIDs whose
+        # cmdline has the service path as a whole argv entry, then starts
+        # a new daemon with stdin closed and exits.
+        cat > "$STATE/restart-kidvid-lock.sh" << "EOF"
+#!/system/bin/sh
+SVC=/data/adb/modules/kidvid_lock/service.sh
+SELF=$$
+for proc in /proc/[0-9]*; do
+    pid=${proc#/proc/}
+    [ "$pid" = "$SELF" ] && continue
+    if tr ' ' '
+' < "$proc/cmdline" 2>/dev/null | grep -qx "$SVC"; then
+        kill "$pid" 2>/dev/null || true
+    fi
+done
+sleep 1
+# Reap anything that ignored the first signal.
+for proc in /proc/[0-9]*; do
+    pid=${proc#/proc/}
+    [ "$pid" = "$SELF" ] && continue
+    if tr ' ' '
+' < "$proc/cmdline" 2>/dev/null | grep -qx "$SVC"; then
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+done
+sh "$SVC" </dev/null >/dev/null 2>&1 &
+echo OK
+EOF
+        run_timeout 30 "$ADB" -s "$SERIAL" push "$STATE/restart-kidvid-lock.sh" /data/local/tmp/restart-kidvid-lock.sh >/dev/null
+        RESTART_OUT=$(run_timeout 15 "$ADB" -s "$SERIAL" shell su -c "sh /data/local/tmp/restart-kidvid-lock.sh") || true
+        if ! printf '%s
+' "$RESTART_OUT" | grep -q "OK"; then
+            log "magisk kidvid_lock restart did not return OK: $(printf '%s' "$RESTART_OUT" | tr '
+' ' ' | cut -c1-200)"
+        fi
         log "magisk kidvid_lock service updated and restarted"
         MAGISK_OK=1
     else
