@@ -5,11 +5,14 @@ import android.app.AlertDialog;
 import android.app.ActivityManager;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.database.ContentObserver;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.media.AudioManager;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.net.Uri;
@@ -18,10 +21,12 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.text.InputType;
 import android.os.PowerManager;
 import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -51,6 +56,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -94,6 +100,24 @@ public class MainActivity extends Activity {
 
     // Browse button
     private Button browseButton;
+
+    // Parent-configured volume policy and hard cap enforcement
+    private AudioManager audioManager;
+    private VolumeSettingsStore volumeStore;
+    private VolumeController volumeController;
+    private float currentPlayerGain = 1.0f;
+    private final Handler volumeHandler = new Handler(Looper.getMainLooper());
+    private ContentObserver volumeObserver;
+    private static final long VOLUME_CHECK_INTERVAL_MS = 2000;
+    private final Runnable volumeTickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (volumeController != null) {
+                volumeController.tick();
+            }
+            volumeHandler.postDelayed(this, VOLUME_CHECK_INTERVAL_MS);
+        }
+    };
 
     // Parent-gated delete: sustained ~5s hold on a thumbnail, then PIN.
     // Must cancel on finger-up / move / scroll — a brief press must never open PIN.
@@ -188,6 +212,8 @@ public class MainActivity extends Activity {
                 seekRelative(-10000);
             }
         });
+
+        initVolumeControl();
 
         if (Build.VERSION.SDK_INT >= 23
                 && checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
@@ -462,6 +488,48 @@ public class MainActivity extends Activity {
         });
         titleRow.addView(syncButton,
             new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button settingsButton = new Button(this);
+        settingsButton.setText("\u2699\uFE0E");
+        settingsButton.setTextSize(16);
+        settingsButton.setBackgroundColor(Color.argb(60, 40, 40, 60));
+        settingsButton.setTextColor(Color.argb(175, 205, 205, 225));
+        settingsButton.setPadding(22, 14, 22, 14);
+        settingsButton.setMinWidth(0);
+        settingsButton.setMinHeight(0);
+        settingsButton.setMinimumWidth(0);
+        settingsButton.setMinimumHeight(0);
+        settingsButton.setContentDescription("Settings");
+        settingsButton.setTag("settings_button");
+        settingsButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                VolumePolicy current = volumeController != null
+                        ? volumeController.getPolicy()
+                        : VolumePolicy.defaults();
+                VolumeSettingsUi.showPinThenSettings(
+                        MainActivity.this,
+                        PARENT_DELETE_PIN,
+                        current,
+                        new VolumeSettingsUi.PolicySavedListener() {
+                            @Override
+                            public void onPolicySaved(VolumePolicy updated) {
+                                if (volumeStore != null) {
+                                    volumeStore.save(updated);
+                                }
+                                if (volumeController != null) {
+                                    volumeController.applyPolicy(updated);
+                                }
+                                Toast.makeText(MainActivity.this,
+                                        "Volume settings saved", Toast.LENGTH_SHORT).show();
+                            }
+                        });
+            }
+        });
+        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        settingsParams.setMargins(8, 0, 0, 0);
+        titleRow.addView(settingsButton, settingsParams);
 
         ((LinearLayout) browserOverlay).addView(titleRow,
             new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -908,6 +976,11 @@ public class MainActivity extends Activity {
             @Override
             public void onPrepared(MediaPlayer mp) {
                 currentPlayer = mp;
+                if (volumeController != null) {
+                    volumeController.onPlaybackPrepared();
+                } else {
+                    mp.setVolume(currentPlayerGain, currentPlayerGain);
+                }
                 mp.setLooping(true);
                 mp.start();
             }
@@ -937,6 +1010,20 @@ public class MainActivity extends Activity {
     // --- Touch handling ---
     // Simplified: swipe up/down = next/prev, long press = rewind 10s
     // Seek bar handles scrubbing. That's it.
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            if (volumeController != null) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    volumeController.onVolumeKey(keyCode);
+                }
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
@@ -1201,6 +1288,9 @@ public class MainActivity extends Activity {
         if (!parentExitRequested) {
             pinScreen();
         }
+        if (volumeController != null) {
+            volumeController.tick();
+        }
         if (videoView != null && !videoView.isPlaying() && !isPaused && !browserVisible) {
             videoView.start();
         }
@@ -1214,5 +1304,70 @@ public class MainActivity extends Activity {
         seekHandler.removeCallbacksAndMessages(null);
         deleteHoldHandler.removeCallbacksAndMessages(null);
         thumbExecutor.shutdownNow();
+        volumeHandler.removeCallbacksAndMessages(null);
+        if (volumeObserver != null) {
+            try {
+                getContentResolver().unregisterContentObserver(volumeObserver);
+            } catch (Exception ignored) {}
+            volumeObserver = null;
+        }
+    }
+
+    private void initVolumeControl() {
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        volumeStore = new VolumeSettingsStore(new SharedPreferencesStore(this));
+        volumeController = new VolumeController(new VolumeController.VolumeHost() {
+            @Override
+            public int getStreamMaxVolume() {
+                if (audioManager == null) return 0;
+                return audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            }
+
+            @Override
+            public int getStreamVolume() {
+                if (audioManager == null) return 0;
+                return audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+            }
+
+            @Override
+            public void setStreamVolume(int index) {
+                if (audioManager == null) return;
+                try {
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0);
+                } catch (SecurityException ignored) {}
+            }
+
+            @Override
+            public void setPlayerVolume(float gain) {
+                currentPlayerGain = gain;
+                if (currentPlayer != null) {
+                    try {
+                        currentPlayer.setVolume(gain, gain);
+                    } catch (IllegalStateException ignored) {}
+                }
+            }
+
+            @Override
+            public int getCurrentMinuteOfDay() {
+                Calendar cal = Calendar.getInstance();
+                return cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE);
+            }
+        });
+
+        volumeController.applyPolicy(volumeStore.load());
+        volumeObserver = new ContentObserver(volumeHandler) {
+            @Override
+            public void onChange(boolean selfChange) {
+                if (volumeController != null) {
+                    volumeController.tick();
+                }
+            }
+        };
+        try {
+            getContentResolver().registerContentObserver(
+                    Settings.System.CONTENT_URI, true, volumeObserver);
+        } catch (Exception ignored) {}
+        volumeHandler.removeCallbacks(volumeTickRunnable);
+        volumeHandler.postDelayed(volumeTickRunnable, VOLUME_CHECK_INTERVAL_MS);
     }
 }
