@@ -138,6 +138,12 @@ discover_ip() {
         nip=$("$ADB" mdns services 2>/dev/null | grep -o '192\.168\.[0-9.]*' | head -1 || true)
     fi
     if [ -n "$nip" ] && [ "$nip" != "$IP" ]; then
+        # Only accept a device that is actually the Pixel (mdns also finds TVs).
+        run_timeout 15 "$ADB" connect "$nip:5555" >/dev/null 2>&1 || true
+        if ! run_timeout 12 "$ADB" -s "$nip:5555" shell getprop ro.product.model 2>/dev/null | grep -qi pixel; then
+            log "discover: $nip is not a Pixel, ignoring"
+            return 1
+        fi
         IP=$nip
         SERIAL="$IP:5555"
         echo "$IP" > "$IPF"
